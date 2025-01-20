@@ -39,5 +39,22 @@ module divu_1iter (
     */
 
     // TODO: your code here
+    wire[31:0] temp_rem = (i_remainder << 1) | ((i_dividend >> 31) & 1);
+    assign o_dividend = i_dividend << 1;
+    assign o_quotient = i_quotient << 1;
+    assign o_remainder = temp_rem;
+    // always_comb begin
+    //     if (temp_rem < i_divisor) begin 
+    //         assign o_quotient = i_quotient << 1;
+    //         assign o_remainder = temp_rem;
+    //     end else begin
+    //         assign o_quotient = (i_quotient << 1) | 1;
+    //         assign o_remainder = temp_rem - i_divisor;
+    //     end
+    // end
+
+    
+
+    
 
 endmodule
