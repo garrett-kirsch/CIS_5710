@@ -14,9 +14,9 @@ module divider_unsigned (
     // TODO: your code here
 
     // create buses for each stage
-    wire [31:0] dividend [32];
-    wire [31:0] remainder [32];
-    wire [31:0] quotient [32];
+    wire [31:0] dividend [33];
+    wire [31:0] remainder [33];
+    wire [31:0] quotient [33];
     
     // assign initial conditions
     assign dividend[0] = i_dividend;
@@ -25,8 +25,14 @@ module divider_unsigned (
 
     genvar i;
     for (i = 0; i < 32; i ++) begin
-        
+        divu_1iter d(.i_dividend(dividend[i]), .i_divisor(i_divisor), .i_remainder(remainder[i]), .i_quotient(quotient[i]),
+                    .o_dividend(dividend[i + 1]), .o_remainder(remainder[i + 1]), .o_quotient(quotient[i + 1]));
     end
+
+    // read out
+    assign o_remainder = remainder[32];
+    assign o_quotient = quotient[32];
+
 
 endmodule
 
