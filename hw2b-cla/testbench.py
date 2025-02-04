@@ -172,3 +172,11 @@ async def test_random1k(dut):
         pass
     pass
 
+@cocotb.test()
+async def test_overflow3(dut):
+    await Timer(1, "ns")
+    dut.a.value = 0xA3BC7332
+    dut.b.value = 0x134A62AC
+    dut.cin.value = 0
+    await Timer(1, "ns")
+    assertEquals(0xB706D5DE, dut.sum.value)

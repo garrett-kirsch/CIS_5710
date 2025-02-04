@@ -40,13 +40,14 @@ module gp8(input wire [7:0] gin, pin,
            input wire cin,
            output wire gout, pout,
            output wire [6:0] cout);
-   wire gout4, pout4;
-   gp4 g0(.gin(gin[3:0]), .pin(pin[3:0]), .cin(cin), .gout(gout4), .pout(pout4), .cout(cout[2:0]));
+   wire gout0, pout0, gout1, pout1;
+   gp4 g0(.gin(gin[3:0]), .pin(pin[3:0]), .cin(cin), .gout(gout0), .pout(pout0), .cout(cout[2:0]));
 
-   assign cout[3] = gout4 | pout4 & cin;
-   gp4 g1(.gin(gin[7:4]), .pin(pin[7:4]), .cin(cout[3]), .gout(gout), .pout(pout), .cout(cout[6:4]));
+   assign cout[3] = gout0 | pout0 & cin;
+   gp4 g1(.gin(gin[7:4]), .pin(pin[7:4]), .cin(cout[3]), .gout(gout1), .pout(pout1), .cout(cout[6:4]));
 
-
+   assign pout = pout0 & pout1;
+   assign gout = gout1 | gout0 & pout1;
    
 
 endmodule
