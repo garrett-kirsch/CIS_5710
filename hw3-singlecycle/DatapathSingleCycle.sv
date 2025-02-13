@@ -26,6 +26,27 @@ module RegFile (
 
   // TODO: your code here
 
+  // regs[0] (x0) is always 0
+  assign regs[0] = 0;
+
+  // output the data for the read ports
+  assign rs1_data = regs[rs1];
+  assign rs2_data = regs[rs2];
+  
+  // check if the clk is at its rising edge
+  always_ff @(posedge clk) begin 
+    if (rst) begin
+      regs <= '{default: '0};
+      // for (i = 1; i < NumRegs; i ++) begin
+      //   regs[i] <= 0;
+      // end
+    end else if (we && rd != 0) begin
+      regs[rd] <= rd_data;
+    end
+
+  end
+
+
 endmodule
 
 module DatapathSingleCycle (
