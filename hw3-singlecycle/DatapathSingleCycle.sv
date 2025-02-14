@@ -372,7 +372,7 @@ module DatapathSingleCycle (
 
       OpEnviron: begin
         // ecall -> halt program, transfer control to OS (we don't have to do for now)
-        pcNext = pcCurrent + 4;
+        //pcNext = pcCurrent + 4;
         halt = 1;
         
       end
