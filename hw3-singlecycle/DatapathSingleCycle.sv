@@ -24,9 +24,7 @@ module RegFile (
   localparam int NumRegs = 32;
   logic [`REG_SIZE] regs[NumRegs];
 
-  // TODO: your code here
-
-  // regs[0] (x0) is always 0
+    // regs[0] (x0) is always 0
   assign regs[0] = 0;
 
   // output the data for the read ports
@@ -95,6 +93,10 @@ module DatapathSingleCycle (
   wire [`REG_SIZE] imm_s_sext = {{20{imm_s[11]}}, imm_s[11:0]};
   wire [`REG_SIZE] imm_b_sext = {{19{imm_b[12]}}, imm_b[12:0]};
   wire [`REG_SIZE] imm_j_sext = {{11{imm_j[20]}}, imm_j[20:0]};
+
+  // ADDED: U-type
+
+  wire [19:0] imm_u = insn_from_imem[31:12];
 
   // opcodes - see section 19 of RiscV spec
   localparam bit [`OPCODE_SIZE] OpLoad = 7'b00_000_11;
@@ -214,23 +216,167 @@ module DatapathSingleCycle (
   RegFile rf (
     .clk(clk),
     .rst(rst),
-    .we(1'b0),
-    .rd(0),
-    .rd_data(0),
-    .rs1(0),
-    .rs2(0),
+    .we(we),
+    .rd(insn_rd),
+    .rd_data(rd_data),
+    .rs1(insn_rs1),
+    .rs2(insn_rs2),
     .rs1_data(rs1_data),
     .rs2_data(rs2_data));
 
+  // data to load into register
+  logic [31:0] rd_data;
+  // write enable
+  logic we;
+
   logic illegal_insn;
+
+  // sum for register register instructions
+  // regregsum = rs1_data + rs2_data
+  wire [31:0] regregsum;
+  cla regregadder(.a(rs1_data), .b(rs2_data), .cin(0), .sum(regregsum));
+
+  // diff for register register instructions
+  // regregdiff = rs1_data - rs2_data
+  wire [31:0] regregdiff;
+  cla regregsubtracter(.a(rs1_data), .b(~rs2_data), .cin(1), .sum(regregdiff));
+
+  // sum for register immediate instructions
+  // regimmsum = rs1_data + imm_i
+  wire[31:0] regimmsum;
+  cla regimmadder(.a(rs1_data), .b(imm_i_sext), .cin(0), .sum(regimmsum));
 
   always_comb begin
     illegal_insn = 1'b0;
+    we = 0;
+    rd_data = 0;
 
+    // TODO: implement instructions
     case (insn_opcode)
       OpLui: begin
-        // TODO: start here by implementing lui
+        we = 1;
+        pcNext = pcCurrent + 4;
+        rd_data = imm_u << 12;
+               
       end
+
+      // I-TYPE
+      OpRegImm : begin // rs_data = rs1_data _ immi
+        we = 1;
+        pcNext = pcCurrent + 4;
+        case (1)
+          insn_addi: begin
+            rd_data = regimmsum;
+          end
+          insn_slti: begin
+            rd_data = $signed(rs1_data) < $signed(imm_i_sext) ? 1 : 0;
+          end
+          insn_sltiu: begin
+            rd_data = rs1_data < imm_i ? 1 : 0;
+          end
+          insn_xori: begin
+            rd_data = rs1_data ^ imm_i_sext;
+          end
+          insn_ori: begin
+            rd_data = rs1_data | imm_i_sext;
+          end
+          insn_andi: begin
+            rd_data = rs1_data & imm_i_sext;
+          end
+          insn_slli: begin
+            rd_data = rs1_data << imm_i[4:0];
+          end
+          insn_srli: begin
+            rd_data = rs1_data >> imm_i[4:0];
+          end
+          insn_srai: begin
+            rd_data = rs1_data >>> imm_i[4:0];
+          end
+        endcase
+      // R-TYPE 
+      end
+      OpRegReg: begin // rs_data = rs1_data _ rs2_data
+        we = 1;
+        pcNext = pcCurrent + 4;
+        case (1) 
+          insn_add: begin
+            rd_data = regregsum;
+          end
+          insn_sub: begin
+            rd_data = regregdiff;
+          end
+          insn_sll: begin
+            rd_data = rs1_data << rs2_data[4:0];
+          end
+          insn_slt: begin
+            rd_data = $signed(rs1_data) < $signed(rs2_data) ? 1 : 0;
+          end
+          insn_sltu: begin
+            rd_data = rs1_data < rs2_data ? 1 : 0;
+          end
+          insn_xor: begin
+            rd_data = rs1_data ^ rs2_data;
+          end
+          insn_srl: begin
+            rd_data = rs1_data >> rs2_data[4:0];
+          end
+          insn_sra: begin
+            rd_data = rs1_data >>> rs2_data[4:0];
+          end
+          insn_or: begin
+            rd_data = rs1_data | rs2_data;
+          end
+          insn_and: begin
+            rd_data = rs1_data & rs2_data;
+          end
+
+        endcase
+
+      end  
+      
+      OpBranch: begin
+        pcNext = pcCurrent + 4;
+        case (1)
+          insn_beq: begin
+            if (rs1_data == rs2_data) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+          insn_bne: begin
+            if (rs1_data != rs2_data) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+          insn_blt: begin
+            if ($signed(rs1_data) < $signed(rs2_data)) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+          insn_bge: begin
+            if ($signed(rs1_data) >= $signed(rs2_data)) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+          insn_bltu: begin
+            if (rs1_data < rs2_data) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+          insn_bgeu: begin
+            if (rs1_data >= rs2_data) begin
+              pcNext = pcCurrent + (imm_b_sext << 1);
+            end
+          end
+        endcase
+      end
+
+      OpEnviron: begin
+        // ecall -> halt program, transfer control to OS (we don't have to do for now)
+        pcNext = pcCurrent + 4;
+        halt = 1;
+        
+      end
+
       default: begin
         illegal_insn = 1'b1;
       end
