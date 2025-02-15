@@ -38,7 +38,7 @@ module RegFile (
       // for (i = 1; i < NumRegs; i ++) begin
       //   regs[i] <= 0;
       // end
-    end else if (we && rd != 0) begin
+    end else if (we && (rd != 0)) begin
       regs[rd] <= rd_data;
     end
 
@@ -246,24 +246,71 @@ module DatapathSingleCycle (
   wire[31:0] regimmsum;
   cla regimmadder(.a(rs1_data), .b(imm_i_sext), .cin(0), .sum(regimmsum));
 
+  // intermediary for multiplier instructions
+  //logic [63:0] multiple;
+
+  // divider signed
+  // wire[31:0] squotient;
+  // wire[31:0] sremainder;
+
+  // logic[31:0] true_squotient;
+
+  
+  
+  // logic [31:0] sdivisor;
+  // logic [31:0] sdividend;
+  //convert dividend and divisor to unsigned
+  // always_comb begin
+    
+  //   sdividend = rs1_data;
+  //   sdivisor = rs2_data;
+  //   true_squotient = squotient;
+  //   if (rs1_data[31] ^ rs2_data[31]) begin
+  //     true_squotient = (~squotient) + 1;
+  //   end
+  //   if (rs1_data[31]) begin
+  //     sdividend = (~rs1_data) + 1;
+  //   end
+  //   if (rs2_data[31]) begin
+  //     sdivisor = (~rs2_data) + 1;
+  //   end
+  // end
+
+  // divider_unsigned sdivider(.i_dividend(sdividend), .i_divisor(sdivisor), .o_quotient(squotient), .o_remainder(sremainder));
+
+  // // divider unsigned
+  // wire[31:0] uquotient;
+  // wire[31:0] uremainder;
+
+  // divider_unsigned udivider(.i_dividend(rs1_data), .i_divisor(rs2_data), .o_quotient(uquotient), .o_remainder(uremainder));
+
+  
   always_comb begin
     illegal_insn = 1'b0;
     we = 0;
     rd_data = 0;
+    halt = 0;
+    //multiple = 0;
+    
+    store_we_to_dmem = 0;
+    pcNext = pcCurrent + 4;
 
     // TODO: implement instructions
     case (insn_opcode)
       OpLui: begin
         we = 1;
-        pcNext = pcCurrent + 4;
         rd_data = imm_u << 12;
                
+      end
+
+      OpAuipc : begin
+        pcNext = pcCurrent + (imm_u << 12);
       end
 
       // I-TYPE
       OpRegImm : begin // rs_data = rs1_data _ immi
         we = 1;
-        pcNext = pcCurrent + 4;
+        
         case (1)
           insn_addi: begin
             rd_data = regimmsum;
@@ -272,7 +319,7 @@ module DatapathSingleCycle (
             rd_data = $signed(rs1_data) < $signed(imm_i_sext) ? 1 : 0;
           end
           insn_sltiu: begin
-            rd_data = rs1_data < imm_i ? 1 : 0;
+            rd_data = rs1_data < imm_i_sext ? 1 : 0;
           end
           insn_xori: begin
             rd_data = rs1_data ^ imm_i_sext;
@@ -290,14 +337,14 @@ module DatapathSingleCycle (
             rd_data = rs1_data >> imm_i[4:0];
           end
           insn_srai: begin
-            rd_data = rs1_data >>> imm_i[4:0];
+            rd_data = $signed(rs1_data) >>> (imm_i[4:0]);
           end
+          
         endcase
       // R-TYPE 
       end
       OpRegReg: begin // rs_data = rs1_data _ rs2_data
         we = 1;
-        pcNext = pcCurrent + 4;
         case (1) 
           insn_add: begin
             rd_data = regregsum;
@@ -318,10 +365,10 @@ module DatapathSingleCycle (
             rd_data = rs1_data ^ rs2_data;
           end
           insn_srl: begin
-            rd_data = rs1_data >> rs2_data[4:0];
+            rd_data = rs1_data >> (rs2_data[4:0]);
           end
           insn_sra: begin
-            rd_data = rs1_data >>> rs2_data[4:0];
+            rd_data = $signed(rs1_data) >>> (rs2_data[4:0]);
           end
           insn_or: begin
             rd_data = rs1_data | rs2_data;
@@ -329,50 +376,81 @@ module DatapathSingleCycle (
           insn_and: begin
             rd_data = rs1_data & rs2_data;
           end
+          // Multiply
+          // insn_mul: begin
+          //   multiple = (rs1_data * rs2_data);
+          //   rd_data = multiple[31:0];
+          // end
+          // insn_mulh: begin
+          //   multiple = $signed(rs1_data) * $signed(rs2_data);
+          //   rd_data = multiple[63:32];
+          // end
+          // insn_mulhsu: begin
+          //   multiple = $signed(rs1_data) * $unsigned(rs2_data);
+          //   rd_data = multiple[63:32];
+          // end
+          // insn_mulhu: begin
+          //   multiple = $unsigned(rs1_data) * $unsigned(rs2_data);
+          //   rd_data = multiple[63:32];
+          // end
+          // // Divide
+          // insn_div: begin
+          //   rd_data = true_squotient;
+          // end
+          // insn_divu: begin
+          //   rd_data = uquotient;
+          // end
+          // // Modulus
+          // insn_rem: begin
+          //   rd_data = sremainder;
+          // end
+          // insn_remu: begin
+          //   rd_data = uremainder;
+          // end
 
-        endcase
+      endcase
 
       end  
       
       OpBranch: begin
-        pcNext = pcCurrent + 4;
         case (1)
           insn_beq: begin
             if (rs1_data == rs2_data) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
-            end
+              pcNext = pcCurrent + (imm_b_sext);
+            end 
           end
           insn_bne: begin
             if (rs1_data != rs2_data) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
+              pcNext = pcCurrent + (imm_b_sext);
             end
           end
           insn_blt: begin
             if ($signed(rs1_data) < $signed(rs2_data)) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
+              pcNext = pcCurrent + (imm_b_sext);
             end
           end
           insn_bge: begin
             if ($signed(rs1_data) >= $signed(rs2_data)) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
+              pcNext = pcCurrent + (imm_b_sext);
             end
           end
           insn_bltu: begin
             if (rs1_data < rs2_data) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
+              pcNext = pcCurrent + (imm_b_sext);
             end
           end
           insn_bgeu: begin
             if (rs1_data >= rs2_data) begin
-              pcNext = pcCurrent + (imm_b_sext << 1);
+              pcNext = pcCurrent + (imm_b_sext);
             end
           end
+          
         endcase
+        
       end
 
       OpEnviron: begin
         // ecall -> halt program, transfer control to OS (we don't have to do for now)
-        //pcNext = pcCurrent + 4;
         halt = 1;
         
       end
