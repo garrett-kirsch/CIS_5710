@@ -259,6 +259,7 @@ module DatapathSingleCycle (
   
   logic [31:0] sdivisor;
   logic [31:0] sdividend;
+
   //convert dividend and divisor to unsigned
   always_comb begin
     
@@ -285,6 +286,7 @@ module DatapathSingleCycle (
   divider_unsigned udivider(.i_dividend(rs1_data), .i_divisor(rs2_data), .o_quotient(uquotient), .o_remainder(uremainder));
 
   
+  
   always_comb begin
     illegal_insn = 1'b0;
     we = 0;
@@ -294,6 +296,8 @@ module DatapathSingleCycle (
     
     store_we_to_dmem = 0;
     pcNext = pcCurrent + 4;
+
+    addr_to_dmem = 0;
 
     // TODO: implement instructions
     case (insn_opcode)
@@ -451,21 +455,56 @@ module DatapathSingleCycle (
 
       OpLoad: begin
         we = 1;
+        // ensure word addressable
+        addr_to_dmem = regimmsum & 32'b1111_1111_1111_1100;
         case (1) 
           insn_lb: begin
-
+            // offset: 0, 1, 2, 3
+            
+            
+            case (regimmsum[1:0])
+              0: begin
+                // load first byte
+                rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+              end
+              1: begin
+                // load second byte
+                rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+              end
+              2: begin
+                // load third byte
+                rd_data = {{24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+              end
+              3: begin
+                // load fourth byte
+                rd_data = {{24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+              end
+            endcase
+            
           end
           insn_lh: begin
-
+            // offset: 0 or 1
+            
+            
+            if (regimmsum[1]) begin
+              // load the second half of the word
+              rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[31:16]};
+            end else begin
+              // load the first half of the word
+              rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
+            end
+            
           end
           insn_lw: begin
-
+                       
+            rd_data = load_data_from_dmem;
           end
         endcase
       end
 
       OpStore: begin
-      
+        // ensure word addressable
+        addr_to_dmem = regimmsum & 32'b1111_1111_1111_1100;
       end
 
       OpJalr: begin
