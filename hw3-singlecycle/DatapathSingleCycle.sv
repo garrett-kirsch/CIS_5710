@@ -247,42 +247,42 @@ module DatapathSingleCycle (
   cla regimmadder(.a(rs1_data), .b(imm_i_sext), .cin(0), .sum(regimmsum));
 
   // intermediary for multiplier instructions
-  //logic [63:0] multiple;
+  logic [63:0] multiple;
 
   // divider signed
-  // wire[31:0] squotient;
-  // wire[31:0] sremainder;
+  wire[31:0] squotient;
+  wire[31:0] sremainder;
 
-  // logic[31:0] true_squotient;
+  logic[31:0] true_squotient;
 
   
   
-  // logic [31:0] sdivisor;
-  // logic [31:0] sdividend;
+  logic [31:0] sdivisor;
+  logic [31:0] sdividend;
   //convert dividend and divisor to unsigned
-  // always_comb begin
+  always_comb begin
     
-  //   sdividend = rs1_data;
-  //   sdivisor = rs2_data;
-  //   true_squotient = squotient;
-  //   if (rs1_data[31] ^ rs2_data[31]) begin
-  //     true_squotient = (~squotient) + 1;
-  //   end
-  //   if (rs1_data[31]) begin
-  //     sdividend = (~rs1_data) + 1;
-  //   end
-  //   if (rs2_data[31]) begin
-  //     sdivisor = (~rs2_data) + 1;
-  //   end
-  // end
+    sdividend = rs1_data;
+    sdivisor = rs2_data;
+    true_squotient = squotient;
+    if (rs1_data[31] ^ rs2_data[31]) begin
+      true_squotient = (~squotient) + 1;
+    end
+    if (rs1_data[31]) begin
+      sdividend = (~rs1_data) + 1;
+    end
+    if (rs2_data[31]) begin
+      sdivisor = (~rs2_data) + 1;
+    end
+  end
 
-  // divider_unsigned sdivider(.i_dividend(sdividend), .i_divisor(sdivisor), .o_quotient(squotient), .o_remainder(sremainder));
+  divider_unsigned sdivider(.i_dividend(sdividend), .i_divisor(sdivisor), .o_quotient(squotient), .o_remainder(sremainder));
 
   // // divider unsigned
-  // wire[31:0] uquotient;
-  // wire[31:0] uremainder;
+  wire[31:0] uquotient;
+  wire[31:0] uremainder;
 
-  // divider_unsigned udivider(.i_dividend(rs1_data), .i_divisor(rs2_data), .o_quotient(uquotient), .o_remainder(uremainder));
+  divider_unsigned udivider(.i_dividend(rs1_data), .i_divisor(rs2_data), .o_quotient(uquotient), .o_remainder(uremainder));
 
   
   always_comb begin
@@ -290,7 +290,7 @@ module DatapathSingleCycle (
     we = 0;
     rd_data = 0;
     halt = 0;
-    //multiple = 0;
+    multiple = 0;
     
     store_we_to_dmem = 0;
     pcNext = pcCurrent + 4;
@@ -377,41 +377,41 @@ module DatapathSingleCycle (
             rd_data = rs1_data & rs2_data;
           end
           // Multiply
-          // insn_mul: begin
-          //   multiple = (rs1_data * rs2_data);
-          //   rd_data = multiple[31:0];
-          // end
-          // insn_mulh: begin
-          //   multiple = $signed(rs1_data) * $signed(rs2_data);
-          //   rd_data = multiple[63:32];
-          // end
-          // insn_mulhsu: begin
-          //   multiple = $signed(rs1_data) * $unsigned(rs2_data);
-          //   rd_data = multiple[63:32];
-          // end
-          // insn_mulhu: begin
-          //   multiple = $unsigned(rs1_data) * $unsigned(rs2_data);
-          //   rd_data = multiple[63:32];
-          // end
-          // // Divide
-          // insn_div: begin
-          //   rd_data = true_squotient;
-          // end
-          // insn_divu: begin
-          //   rd_data = uquotient;
-          // end
-          // // Modulus
-          // insn_rem: begin
-          //   rd_data = sremainder;
-          // end
-          // insn_remu: begin
-          //   rd_data = uremainder;
-          // end
+          insn_mul: begin
+            multiple = (rs1_data * rs2_data);
+            rd_data = multiple[31:0];
+          end
+          insn_mulh: begin
+            multiple = $signed(rs1_data) * $signed(rs2_data);
+            rd_data = multiple[63:32];
+          end
+          insn_mulhsu: begin
+            multiple = $signed(rs1_data) * $unsigned(rs2_data);
+            rd_data = multiple[63:32];
+          end
+          insn_mulhu: begin
+            multiple = $unsigned(rs1_data) * $unsigned(rs2_data);
+            rd_data = multiple[63:32];
+          end
+          // Divide
+          insn_div: begin
+            rd_data = true_squotient;
+          end
+          insn_divu: begin
+            rd_data = uquotient;
+          end
+          // Modulus
+          insn_rem: begin
+            rd_data = sremainder;
+          end
+          insn_remu: begin
+            rd_data = uremainder;
+          end
 
       endcase
 
       end  
-      
+          
       OpBranch: begin
         case (1)
           insn_beq: begin
@@ -444,9 +444,36 @@ module DatapathSingleCycle (
               pcNext = pcCurrent + (imm_b_sext);
             end
           end
-          
+         
         endcase
         
+      end
+
+      OpLoad: begin
+        we = 1;
+        case (1) 
+          insn_lb: begin
+
+          end
+          insn_lh: begin
+
+          end
+          insn_lw: begin
+
+          end
+        endcase
+      end
+
+      OpStore: begin
+      
+      end
+
+      OpJalr: begin
+
+      end
+
+      OpJal: begin
+
       end
 
       OpEnviron: begin
