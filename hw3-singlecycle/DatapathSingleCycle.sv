@@ -242,7 +242,7 @@ module DatapathSingleCycle (
   cla regregsubtracter(.a(rs1_data), .b(~rs2_data), .cin(1), .sum(regregdiff));
 
   // sum for register immediate instructions
-  // regimmsum = rs1_data + imm_i
+  // regimmsum = rs1_data + imm_i_sext
   wire[31:0] regimmsum;
   cla regimmadder(.a(rs1_data), .b(imm_i_sext), .cin(0), .sum(regimmsum));
 
@@ -285,6 +285,18 @@ module DatapathSingleCycle (
 
   divider_unsigned udivider(.i_dividend(rs1_data), .i_divisor(rs2_data), .o_quotient(uquotient), .o_remainder(uremainder));
 
+  // always @(posedge clk) begin
+    
+  //   addr_to_dmem <= mem;
+  // end
+  
+  // memory variables
+  assign addr_to_dmem = mem;
+
+  logic [31:0] mem;
+
+  wire[31:0] raw_mem = rs1_data + imm_s_sext;
+
   
   
   always_comb begin
@@ -294,10 +306,11 @@ module DatapathSingleCycle (
     halt = 0;
     multiple = 0;
     
+    mem = 0;
     store_we_to_dmem = 0;
     pcNext = pcCurrent + 4;
 
-    addr_to_dmem = 0;
+    //addr_to_dmem = 0;
 
     // TODO: implement instructions
     case (insn_opcode)
@@ -308,7 +321,8 @@ module DatapathSingleCycle (
       end
 
       OpAuipc : begin
-        pcNext = pcCurrent + (imm_u << 12);
+        we = 1;
+        rd_data = pcCurrent + (imm_u << 12);
       end
 
       // I-TYPE
@@ -390,7 +404,7 @@ module DatapathSingleCycle (
             rd_data = multiple[63:32];
           end
           insn_mulhsu: begin
-            multiple = $signed(rs1_data) * $unsigned(rs2_data);
+            multiple = $signed(rs1_data) * (rs2_data);
             rd_data = multiple[63:32];
           end
           insn_mulhu: begin
@@ -455,13 +469,10 @@ module DatapathSingleCycle (
 
       OpLoad: begin
         we = 1;
-        // ensure word addressable
-        addr_to_dmem = regimmsum & 32'b1111_1111_1111_1100;
+        mem = regimmsum & 32'hFFFFFFFC;
         case (1) 
           insn_lb: begin
-            // offset: 0, 1, 2, 3
-            
-            
+            // offset: 0, 1, 2, 3           
             case (regimmsum[1:0])
               0: begin
                 // load first byte
@@ -488,7 +499,7 @@ module DatapathSingleCycle (
             
             if (regimmsum[1]) begin
               // load the second half of the word
-              rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[31:16]};
+              rd_data = {{16{load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
             end else begin
               // load the first half of the word
               rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
@@ -496,22 +507,79 @@ module DatapathSingleCycle (
             
           end
           insn_lw: begin
-                       
             rd_data = load_data_from_dmem;
+          end
+          insn_lbu: begin 
+            // offset: 0, 1, 2, 3      (zero extended)     
+            case (regimmsum[1:0])
+              0: begin
+                // load first byte
+                rd_data = {{24{1'b0}}, load_data_from_dmem[7:0]};
+              end
+              1: begin
+                // load second byte
+                rd_data = {{24{1'b0}}, load_data_from_dmem[15:8]};
+              end
+              2: begin
+                // load third byte
+                rd_data = {{24{1'b0}}, load_data_from_dmem[23:16]};
+              end
+              3: begin
+                // load fourth byte
+                rd_data = {{24{1'b0}}, load_data_from_dmem[31:24]};
+              end
+            endcase
+          end
+          insn_lhu: begin
+            if (regimmsum[1]) begin
+              // load the second half of the word (zero extended)
+              rd_data = {{16{1'b0}}, load_data_from_dmem[31:16]};
+            end else begin
+              // load the first half of the word (zero extended)
+              rd_data = {{16{1'b0}}, load_data_from_dmem[15:0]};
+            end
           end
         endcase
       end
 
       OpStore: begin
-        // ensure word addressable
-        addr_to_dmem = regimmsum & 32'b1111_1111_1111_1100;
+        mem = (raw_mem) & 32'hFFFFFFFC;
+        case (1)
+          insn_sb: begin
+            // store only one byte
+            store_we_to_dmem = 4'b1 << raw_mem[1:0];
+            store_data_to_dmem = ({24'd0, rs2_data[7:0]}) << ({3'b0, raw_mem[1:0]} << 3);
+            
+          end
+          insn_sh: begin
+            // store 2 bytes
+            store_we_to_dmem = 4'b11 << raw_mem[1:0];
+           
+            store_data_to_dmem = ({16'd0, rs2_data[15:0]}) << ({3'b0, raw_mem[1:0]} << 3);
+          end
+          insn_sw: begin
+            // store all 4 bytes
+            store_we_to_dmem = 4'b1111;
+            store_data_to_dmem = rs2_data;
+          end
+        endcase
+        
       end
 
       OpJalr: begin
-
+        we = 1;
+        // load next instruction in register
+        rd_data = pcCurrent + 4;
+        // jump to desired location
+        pcNext = (rs1_data + imm_i_sext) & ~(32'd1);
       end
 
       OpJal: begin
+        we = 1;
+        // load next instruction in register
+        rd_data = pcCurrent + 4;
+        // jump to desired offset
+        pcNext = pcCurrent + imm_j_sext;
 
       end
 
@@ -519,6 +587,11 @@ module DatapathSingleCycle (
         // ecall -> halt program, transfer control to OS (we don't have to do for now)
         halt = 1;
         
+      end
+
+      OpMiscMem: begin
+        // fence -> do nothing but increment PC
+
       end
 
       default: begin

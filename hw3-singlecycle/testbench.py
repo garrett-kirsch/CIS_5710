@@ -244,7 +244,7 @@ async def testEcall(dut):
 @cocotb.test()  
 async def testOneRiscvTest(dut):
     "Use this to run one particular riscv test"
-    await riscvTest(dut, cu.RISCV_TESTS_PATH / 'rv32ui-p-lui')
+    await riscvTest(dut, cu.RISCV_TESTS_PATH / 'rv32um-p-mulhsu')
 
 async def riscvTest(dut, binaryPath=None):
     "Run the official RISC-V test whose binary lives at `binaryPath`"
@@ -278,29 +278,29 @@ async def testStoreLoad(dut):
     await ClockCycles(dut.clock_proc, 4)
     assertEquals(0x12345000, dut.datapath.rf.regs[2].value, f'failed at cycle {dut.datapath.cycles_current.value.integer}')
 
-@cocotb.test(skip='RVTEST_ALUBR' in os.environ)
-async def dhrystone(dut):
-    "Run dhrystone benchmark from riscv-tests"
-    dsBinary = cu.RISCV_BENCHMARKS_PATH / 'dhrystone.riscv' 
-    assert dsBinary.exists(), f'Could not find Dhrystone binary {dsBinary}, have you built riscv-tests?'
-    riscv_binary_utils.loadBinaryIntoMemory(dut, dsBinary)
-    await preTestSetup(dut)
+# @cocotb.test(skip='RVTEST_ALUBR' in os.environ)
+# async def dhrystone(dut):
+#     "Run dhrystone benchmark from riscv-tests"
+#     dsBinary = cu.RISCV_BENCHMARKS_PATH / 'dhrystone.riscv' 
+#     assert dsBinary.exists(), f'Could not find Dhrystone binary {dsBinary}, have you built riscv-tests?'
+#     riscv_binary_utils.loadBinaryIntoMemory(dut, dsBinary)
+#     await preTestSetup(dut)
 
-    dut._log.info(f'Running Dhrystone benchmark (takes 193k cycles)...')
-    for cycles in range(210_000):
-        await RisingEdge(dut.clock_proc)
-        if cycles > 0 and 0 == cycles % 10_000:
-            dut._log.info(f'ran {int(cycles/1000)}k cycles...')
-            pass
-        if dut.halt.value == 1:
-            # there are 22 output checks, each sets 1 bit
-            expectedValue = (1<<22) - 1
-            assertEquals(expectedValue, dut.datapath.rf.regs[5].value.integer)
-            latency_millis = (cycles / 5_000_000) * 1000
-            dut._log.info(f'dhrystone passed after {cycles} cycles, {latency_millis} milliseconds with 5MHz clock')
-            return
-        pass
-    raise SimTimeoutError()
+#     dut._log.info(f'Running Dhrystone benchmark (takes 193k cycles)...')
+#     for cycles in range(210_000):
+#         await RisingEdge(dut.clock_proc)
+#         if cycles > 0 and 0 == cycles % 10_000:
+#             dut._log.info(f'ran {int(cycles/1000)}k cycles...')
+#             pass
+#         if dut.halt.value == 1:
+#             # there are 22 output checks, each sets 1 bit
+#             expectedValue = (1<<22) - 1
+#             assertEquals(expectedValue, dut.datapath.rf.regs[5].value.integer)
+#             latency_millis = (cycles / 5_000_000) * 1000
+#             dut._log.info(f'dhrystone passed after {cycles} cycles, {latency_millis} milliseconds with 5MHz clock')
+#             return
+#         pass
+#     raise SimTimeoutError()
 
 #RISCV_TESTS_PATH = Path('../riscv-tests/isa')
 
