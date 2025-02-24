@@ -9,7 +9,7 @@ module MyClockGen (
 	output wire clk_mem;
 	output wire locked;
 	wire clkfb;
-	(* FREQUENCY_PIN_CLKI = "25" *) (* FREQUENCY_PIN_CLKOP = "45" *) (* FREQUENCY_PIN_CLKOS = "45" *) (* ICP_CURRENT = "12" *) (* LPF_RESISTOR = "8" *) (* MFG_ENABLE_FILTEROPAMP = "1" *) (* MFG_GMCREF_SEL = "2" *) EHXPLLL #(
+	(* FREQUENCY_PIN_CLKI = "25" *) (* FREQUENCY_PIN_CLKOP = "4.16667" *) (* FREQUENCY_PIN_CLKOS = "4.01003" *) (* ICP_CURRENT = "12" *) (* LPF_RESISTOR = "8" *) (* MFG_ENABLE_FILTEROPAMP = "1" *) (* MFG_GMCREF_SEL = "2" *) EHXPLLL #(
 		.PLLRST_ENA("DISABLED"),
 		.INTFB_WAKE("DISABLED"),
 		.STDBY_ENABLE("DISABLED"),
@@ -18,17 +18,17 @@ module MyClockGen (
 		.OUTDIVIDER_MUXB("DIVB"),
 		.OUTDIVIDER_MUXC("DIVC"),
 		.OUTDIVIDER_MUXD("DIVD"),
-		.CLKI_DIV(5),
+		.CLKI_DIV(6),
 		.CLKOP_ENABLE("ENABLED"),
-		.CLKOP_DIV(13),
-		.CLKOP_CPHASE(6),
+		.CLKOP_DIV(128),
+		.CLKOP_CPHASE(64),
 		.CLKOP_FPHASE(0),
 		.CLKOS_ENABLE("ENABLED"),
-		.CLKOS_DIV(13),
-		.CLKOS_CPHASE(9),
+		.CLKOS_DIV(133),
+		.CLKOS_CPHASE(97),
 		.CLKOS_FPHASE(2),
 		.FEEDBK_PATH("INT_OP"),
-		.CLKFB_DIV(9)
+		.CLKFB_DIV(1)
 	) pll_i(
 		.RST(1'b0),
 		.STDBY(1'b0),
@@ -46,6 +46,61 @@ module MyClockGen (
 		.ENCLKOP(1'b0),
 		.LOCK(locked)
 	);
+endmodule
+module divider_unsigned (
+	i_dividend,
+	i_divisor,
+	o_remainder,
+	o_quotient
+);
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	wire [31:0] dividend [0:32];
+	wire [31:0] remainder [0:32];
+	wire [31:0] quotient [0:32];
+	assign dividend[0] = i_dividend;
+	assign remainder[0] = 0;
+	assign quotient[0] = 0;
+	genvar _gv_i_1;
+	generate
+		for (_gv_i_1 = 0; _gv_i_1 < 32; _gv_i_1 = _gv_i_1 + 1) begin : genblk1
+			localparam i = _gv_i_1;
+			divu_1iter d(
+				.i_dividend(dividend[i]),
+				.i_divisor(i_divisor),
+				.i_remainder(remainder[i]),
+				.i_quotient(quotient[i]),
+				.o_dividend(dividend[i + 1]),
+				.o_remainder(remainder[i + 1]),
+				.o_quotient(quotient[i + 1])
+			);
+		end
+	endgenerate
+	assign o_remainder = remainder[32];
+	assign o_quotient = quotient[32];
+endmodule
+module divu_1iter (
+	i_dividend,
+	i_divisor,
+	i_remainder,
+	i_quotient,
+	o_dividend,
+	o_remainder,
+	o_quotient
+);
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	input wire [31:0] i_remainder;
+	input wire [31:0] i_quotient;
+	output wire [31:0] o_dividend;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	wire [31:0] temp_rem = (i_remainder << 1) | ((i_dividend >> 31) & 1);
+	assign o_dividend = i_dividend << 1;
+	assign o_quotient = (temp_rem < i_divisor ? i_quotient << 1 : (i_quotient << 1) | 1);
+	assign o_remainder = (temp_rem < i_divisor ? temp_rem : temp_rem - i_divisor);
 endmodule
 module gp1 (
 	a,
@@ -243,7 +298,7 @@ module DatapathSingleCycle (
 	input wire [31:0] insn_from_imem;
 	output wire [31:0] addr_to_dmem;
 	input wire [31:0] load_data_from_dmem;
-	output wire [31:0] store_data_to_dmem;
+	output reg [31:0] store_data_to_dmem;
 	output reg [3:0] store_we_to_dmem;
 	wire [6:0] insn_funct7;
 	wire [4:0] insn_rs2;
@@ -384,6 +439,36 @@ module DatapathSingleCycle (
 		.cin(0),
 		.sum(regimmsum)
 	);
+	reg [63:0] multiple;
+	wire [31:0] product_temp;
+	wire [31:0] squotient;
+	wire [31:0] sremainder;
+	wire [31:0] true_squotient;
+	wire [31:0] true_sremainder;
+	wire [31:0] sdivisor;
+	wire [31:0] sdividend;
+	assign sdividend = (rs1_data[31] ? ~rs1_data + 1 : rs1_data);
+	assign sdivisor = (rs2_data[31] ? ~rs2_data + 1 : rs2_data);
+	assign true_squotient = (rs1_data[31] ^ rs2_data[31] ? ~squotient + 1 : squotient);
+	assign true_sremainder = (rs1_data[31] ? ~sremainder + 1 : sremainder);
+	divider_unsigned sdivider(
+		.i_dividend(sdividend),
+		.i_divisor(sdivisor),
+		.o_quotient(squotient),
+		.o_remainder(sremainder)
+	);
+	wire [31:0] uquotient;
+	wire [31:0] uremainder;
+	divider_unsigned udivider(
+		.i_dividend(rs1_data),
+		.i_divisor(rs2_data),
+		.o_quotient(uquotient),
+		.o_remainder(uremainder)
+	);
+	reg [31:0] mem;
+	assign addr_to_dmem = mem;
+	wire [31:0] raw_mem = rs1_data + imm_s_sext;
+	reg [31:0] inverted_rs1data = ~rs1_data + 32'b00000000000000000000000000000001;
 	always @(*) begin
 		if (_sv2v_0)
 			;
@@ -391,6 +476,9 @@ module DatapathSingleCycle (
 		we = 0;
 		rd_data = 0;
 		halt = 0;
+		multiple = 0;
+		mem = 0;
+		store_data_to_dmem = 0;
 		store_we_to_dmem = 0;
 		pcNext = pcCurrent + 4;
 		case (insn_opcode)
@@ -398,7 +486,10 @@ module DatapathSingleCycle (
 				we = 1;
 				rd_data = imm_u << 12;
 			end
-			OpAuipc: pcNext = pcCurrent + (imm_u << 12);
+			OpAuipc: begin
+				we = 1;
+				rd_data = pcCurrent + (imm_u << 12);
+			end
 			OpRegImm: begin
 				we = 1;
 				case (1)
@@ -426,6 +517,30 @@ module DatapathSingleCycle (
 					insn_sra: rd_data = $signed(rs1_data) >>> rs2_data[4:0];
 					insn_or: rd_data = rs1_data | rs2_data;
 					insn_and: rd_data = rs1_data & rs2_data;
+					insn_mul: begin
+						multiple = rs1_data * rs2_data;
+						rd_data = multiple[31:0];
+					end
+					insn_mulh: begin
+						multiple = $signed(rs1_data) * $signed(rs2_data);
+						rd_data = multiple[63:32];
+					end
+					insn_mulhsu: begin
+						multiple = {{32 {rs1_data[31]}}, rs1_data} * {{32 {1'b0}}, rs2_data};
+						rd_data = multiple[63:32];
+					end
+					insn_mulhu: begin
+						multiple = $unsigned(rs1_data) * $unsigned(rs2_data);
+						rd_data = multiple[63:32];
+					end
+					insn_div:
+						if (sdivisor == 0)
+							rd_data = 32'hffffffff;
+						else
+							rd_data = true_squotient;
+					insn_divu: rd_data = uquotient;
+					insn_rem: rd_data = true_sremainder;
+					insn_remu: rd_data = uremainder;
 				endcase
 			end
 			OpBranch:
@@ -449,7 +564,67 @@ module DatapathSingleCycle (
 						if (rs1_data >= rs2_data)
 							pcNext = pcCurrent + imm_b_sext;
 				endcase
+			OpLoad: begin
+				we = 1;
+				mem = regimmsum & 32'hfffffffc;
+				case (1)
+					insn_lb:
+						case (regimmsum[1:0])
+							0: rd_data = {{24 {load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+							1: rd_data = {{24 {load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+							2: rd_data = {{24 {load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+							3: rd_data = {{24 {load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+						endcase
+					insn_lh:
+						if (regimmsum[1])
+							rd_data = {{16 {load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
+						else
+							rd_data = {{16 {load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
+					insn_lw: rd_data = load_data_from_dmem;
+					insn_lbu:
+						case (regimmsum[1:0])
+							0: rd_data = {{24 {1'b0}}, load_data_from_dmem[7:0]};
+							1: rd_data = {{24 {1'b0}}, load_data_from_dmem[15:8]};
+							2: rd_data = {{24 {1'b0}}, load_data_from_dmem[23:16]};
+							3: rd_data = {{24 {1'b0}}, load_data_from_dmem[31:24]};
+						endcase
+					insn_lhu:
+						if (regimmsum[1])
+							rd_data = {{16 {1'b0}}, load_data_from_dmem[31:16]};
+						else
+							rd_data = {{16 {1'b0}}, load_data_from_dmem[15:0]};
+				endcase
+			end
+			OpStore: begin
+				mem = raw_mem & 32'hfffffffc;
+				case (1)
+					insn_sb: begin
+						store_we_to_dmem = 4'b0001 << raw_mem[1:0];
+						store_data_to_dmem = {24'd0, rs2_data[7:0]} << ({3'b000, raw_mem[1:0]} << 3);
+					end
+					insn_sh: begin
+						store_we_to_dmem = 4'b0011 << raw_mem[1:0];
+						store_data_to_dmem = {16'd0, rs2_data[15:0]} << ({3'b000, raw_mem[1:0]} << 3);
+					end
+					insn_sw: begin
+						store_we_to_dmem = 4'b1111;
+						store_data_to_dmem = rs2_data;
+					end
+				endcase
+			end
+			OpJalr: begin
+				we = 1;
+				rd_data = pcCurrent + 4;
+				pcNext = (rs1_data + imm_i_sext) & ~32'd1;
+			end
+			OpJal: begin
+				we = 1;
+				rd_data = pcCurrent + 4;
+				pcNext = pcCurrent + imm_j_sext;
+			end
 			OpEnviron: halt = 1;
+			OpMiscMem:
+				;
 			default: illegal_insn = 1'b1;
 		endcase
 	end
@@ -504,7 +679,72 @@ module MemorySingleCycle (
 	initial _sv2v_0 = 0;
 endmodule
 `default_nettype none
-module SystemResourceCheck (
+module debouncer (
+	i_clk,
+	i_in,
+	o_debounced,
+	o_debug
+);
+	parameter NIN = 21;
+	parameter LGWAIT = 17;
+	input wire i_clk;
+	input wire [NIN - 1:0] i_in;
+	output reg [NIN - 1:0] o_debounced;
+	output wire [30:0] o_debug;
+	reg different;
+	reg ztimer;
+	reg [NIN - 1:0] r_in;
+	reg [NIN - 1:0] q_in;
+	reg [NIN - 1:0] r_last;
+	reg [LGWAIT - 1:0] timer;
+	initial q_in = 0;
+	initial r_in = 0;
+	initial different = 0;
+	always @(posedge i_clk) q_in <= i_in;
+	always @(posedge i_clk) r_in <= q_in;
+	always @(posedge i_clk) r_last <= r_in;
+	initial ztimer = 1'b1;
+	initial timer = 0;
+	always @(posedge i_clk)
+		if (ztimer && different) begin
+			timer <= {LGWAIT {1'b1}};
+			ztimer <= 1'b0;
+		end
+		else if (!ztimer) begin
+			timer <= timer - 1'b1;
+			ztimer <= timer[LGWAIT - 1:1] == 0;
+		end
+		else begin
+			ztimer <= 1'b1;
+			timer <= 0;
+		end
+	always @(posedge i_clk) different <= (different && !ztimer) || (r_in != o_debounced);
+	initial o_debounced = {NIN {1'b0}};
+	always @(posedge i_clk)
+		if (ztimer)
+			o_debounced <= r_last;
+	reg trigger;
+	initial trigger = 1'b0;
+	always @(posedge i_clk) trigger <= (((!ztimer && !different) && !(|i_in)) && (timer[LGWAIT - 1:2] == 0)) && timer[1];
+	wire [30:0] debug;
+	assign debug[30] = ztimer;
+	assign debug[29] = trigger;
+	assign debug[28] = 1'b0;
+	generate
+		if (NIN >= 14) begin : genblk1
+			assign debug[27:14] = o_debounced[13:0];
+			assign debug[13:0] = r_in[13:0];
+		end
+		else begin : genblk1
+			assign debug[27:14 + NIN] = 0;
+			assign debug[(14 + NIN) - 1:14] = o_debounced;
+			assign debug[13:NIN] = 0;
+			assign debug[NIN - 1:0] = r_in;
+		end
+	endgenerate
+	assign o_debug = debug;
+endmodule
+module SystemDemo (
 	external_clk_25MHz,
 	btn,
 	led
@@ -512,7 +752,17 @@ module SystemResourceCheck (
 	input wire external_clk_25MHz;
 	input wire [6:0] btn;
 	output wire [7:0] led;
+	localparam signed [31:0] MmapButtons = 32'hff001000;
+	localparam signed [31:0] MmapLeds = 32'hff002000;
+	wire rst_button_n;
+	wire [30:0] ignore;
 	wire clk_proc;
+	debouncer #(.NIN(1)) db(
+		.i_clk(clk_proc),
+		.i_in(btn[0]),
+		.o_debounced(rst_button_n),
+		.o_debug(ignore)
+	);
 	wire clk_mem;
 	wire clk_locked;
 	MyClockGen clock_gen(
@@ -521,31 +771,40 @@ module SystemResourceCheck (
 		.clk_mem(clk_mem),
 		.locked(clk_locked)
 	);
+	wire rst = !rst_button_n || !clk_locked;
 	wire [31:0] pc_to_imem;
 	wire [31:0] insn_from_imem;
 	wire [31:0] mem_data_addr;
 	wire [31:0] mem_data_loaded_value;
 	wire [31:0] mem_data_to_write;
 	wire [3:0] mem_data_we;
-	MemorySingleCycle #(.NUM_WORDS(128)) memory(
-		.rst(!clk_locked),
+	reg [7:0] led_state;
+	assign led = led_state;
+	always @(posedge clk_mem)
+		if (rst)
+			led_state <= 0;
+		else if ((mem_data_addr == MmapLeds) && (mem_data_we[0] == 1))
+			led_state <= mem_data_to_write[7:0];
+	MemorySingleCycle #(.NUM_WORDS(1024)) memory(
+		.rst(rst),
 		.clock_mem(clk_mem),
 		.pc_to_imem(pc_to_imem),
 		.insn_from_imem(insn_from_imem),
 		.addr_to_dmem(mem_data_addr),
 		.load_data_from_dmem(mem_data_loaded_value),
 		.store_data_to_dmem(mem_data_to_write),
-		.store_we_to_dmem(mem_data_we)
+		.store_we_to_dmem((mem_data_addr == MmapLeds ? 4'd0 : mem_data_we))
 	);
+	wire halt;
 	DatapathSingleCycle datapath(
 		.clk(clk_proc),
-		.rst(!clk_locked),
+		.rst(rst),
 		.pc_to_imem(pc_to_imem),
 		.insn_from_imem(insn_from_imem),
 		.addr_to_dmem(mem_data_addr),
 		.store_data_to_dmem(mem_data_to_write),
 		.store_we_to_dmem(mem_data_we),
-		.load_data_from_dmem(mem_data_loaded_value),
-		.halt(led[0])
+		.load_data_from_dmem((mem_data_addr == MmapButtons ? {25'd0, btn} : mem_data_loaded_value)),
+		.halt(halt)
 	);
 endmodule

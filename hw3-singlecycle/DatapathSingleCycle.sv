@@ -248,34 +248,28 @@ module DatapathSingleCycle (
 
   // intermediary for multiplier instructions
   logic [63:0] multiple;
+  logic [31:0] product_temp;
 
   // divider signed
   wire[31:0] squotient;
   wire[31:0] sremainder;
 
-  logic[31:0] true_squotient;
-
+  wire [31:0] true_squotient;
+  wire [31:0] true_sremainder;
   
   
-  logic [31:0] sdivisor;
-  logic [31:0] sdividend;
+  wire [31:0] sdivisor;
+  wire [31:0] sdividend;
 
   //convert dividend and divisor to unsigned
-  always_comb begin
-    
-    sdividend = rs1_data;
-    sdivisor = rs2_data;
-    true_squotient = squotient;
-    if (rs1_data[31] ^ rs2_data[31]) begin
-      true_squotient = (~squotient) + 1;
-    end
-    if (rs1_data[31]) begin
-      sdividend = (~rs1_data) + 1;
-    end
-    if (rs2_data[31]) begin
-      sdivisor = (~rs2_data) + 1;
-    end
-  end
+  
+  assign sdividend = rs1_data[31] ? (~rs1_data + 1) : rs1_data;
+  //assign sdividend = rs1_data;
+  assign sdivisor = rs2_data[31] ? (~rs2_data + 1) : rs2_data;
+
+  // convert true quotient negative if applicable
+  assign true_squotient = (rs1_data[31] ^ rs2_data[31]) ? (~squotient + 1) : squotient;
+  assign true_sremainder = (rs1_data[31]) ? (~sremainder + 1) : sremainder;
 
   divider_unsigned sdivider(.i_dividend(sdividend), .i_divisor(sdivisor), .o_quotient(squotient), .o_remainder(sremainder));
 
@@ -297,7 +291,7 @@ module DatapathSingleCycle (
 
   wire[31:0] raw_mem = rs1_data + imm_s_sext;
 
-  
+  logic[31:0] inverted_rs1data = (~rs1_data) + 32'b1;
   
   always_comb begin
     illegal_insn = 1'b0;
@@ -307,6 +301,7 @@ module DatapathSingleCycle (
     multiple = 0;
     
     mem = 0;
+    store_data_to_dmem = 0;
     store_we_to_dmem = 0;
     pcNext = pcCurrent + 4;
 
@@ -404,7 +399,16 @@ module DatapathSingleCycle (
             rd_data = multiple[63:32];
           end
           insn_mulhsu: begin
-            multiple = $signed(rs1_data) * (rs2_data);
+            // if (rs1_data[31]) begin
+            //   multiple = ~(inverted_rs1data * (rs2_data)) + 64'b1;
+            //   rd_data = multiple[63:32];
+            // end else begin
+            //   multiple = (rs1_data) * $unsigned(rs2_data);
+            //   rd_data = multiple[63:32];
+            // end
+
+            multiple = {{32{rs1_data[31]}}, rs1_data} * {{32{1'b0}}, rs2_data};
+            //multiple = $signed(rs1_data) * (rs2_data);
             rd_data = multiple[63:32];
           end
           insn_mulhu: begin
@@ -413,14 +417,19 @@ module DatapathSingleCycle (
           end
           // Divide
           insn_div: begin
-            rd_data = true_squotient;
+            if (sdivisor == 0) begin
+              // return -1 if dividing by zero
+              rd_data = 32'hFFFFFFFF; 
+            end else begin
+              rd_data = true_squotient;
+            end
           end
           insn_divu: begin
             rd_data = uquotient;
           end
           // Modulus
           insn_rem: begin
-            rd_data = sremainder;
+            rd_data = true_sremainder;
           end
           insn_remu: begin
             rd_data = uremainder;
@@ -584,13 +593,13 @@ module DatapathSingleCycle (
       end
 
       OpEnviron: begin
-        // ecall -> halt program, transfer control to OS (we don't have to do for now)
+        // ecall > halt program, transfer control to OS (we don't have to do for now)
         halt = 1;
         
       end
 
       OpMiscMem: begin
-        // fence -> do nothing but increment PC
+        // fence > do nothing but increment PC
 
       end
 
@@ -602,7 +611,7 @@ module DatapathSingleCycle (
 
 endmodule
 
-/* A memory module that supports 1-cycle reads and writes, with one read-only port
+/* A memory module that supports 1 cycle reads and writes, with one read only port
  * and one read+write port.
  */
 module MemorySingleCycle #(
