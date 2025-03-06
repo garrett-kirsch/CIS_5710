@@ -172,7 +172,7 @@ module DatapathMultiCycle (
 
   // this code is only for simulation, not synthesis
   `ifndef SYNTHESIS
-  `include "RvDisassembler.sv"
+  `include "../hw3-singlecycle/RvDisassembler.sv"
   string disasm_string;
   always_comb begin
     disasm_string = rv_disasm(insn_from_imem);
