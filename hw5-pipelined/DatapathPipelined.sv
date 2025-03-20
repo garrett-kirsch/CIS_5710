@@ -14,7 +14,7 @@
 `endif
 
 `ifndef SYNTHESIS
-`include "../hw3-singlecycle/RvDisassembler.sv"
+`include "../hw4-multicycle/RvDisassembler.sv"
 `endif
 `include "../hw2b-cla/cla.sv"
 `include "../hw4-multicycle/DividerUnsignedPipelined.sv"
@@ -153,9 +153,9 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
+
+  logic [`OPCODE_SIZE] opcode;
   
-  logic [4:0] insn_rs1;
-  logic [4:0] insn_rs2;
   logic [4:0] insn_rd;
 
   logic [11:0] imm_i;
@@ -175,18 +175,12 @@ typedef struct packed {
   logic [`REG_SIZE] rs2_data;
 
   // insn_set containing the insn signal
-  insn_set insn_set;
-
-  // // memory signals
-  // logic [`REG_SIZE] addr_to_dmem;
-  // logic [`REG_SIZE] store_data_to_dmem;
-  // logic [3:0] store_we_to_dmem;
-
+  insn_set insn_key;
 
   logic halt;
 
 
-} state_execute_t;
+} stage_execute_t;
 
 /** state at the start of Memory stage **/
 
@@ -194,7 +188,21 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
-} state_memory_t;
+
+  // register signals
+  logic [4:0] insn_rd;
+  logic [`REG_SIZE] rd_data;
+  logic we;
+
+
+  // // memory signals
+  logic [`REG_SIZE] addr_to_dmem;
+  logic [`REG_SIZE] store_data_to_dmem;
+  logic [3:0] store_we_to_dmem;
+
+
+  logic halt;
+} stage_memory_t;
 
 /** state at the start of Write stage **/
 
@@ -202,7 +210,14 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
-} state_write_t;
+
+  // register signals
+  logic [4:0] insn_rd;
+  logic [`REG_SIZE] rd_data;
+  logic we;
+
+  logic halt;
+} stage_write_t;
 
 module DatapathPipelined (
     input wire clk,
@@ -226,19 +241,19 @@ module DatapathPipelined (
 );
 
   // opcodes - see section 19 of RiscV spec
-  localparam bit [`OPCODE_SIZE] OpcodeLoad = 7'b00_000_11;
-  localparam bit [`OPCODE_SIZE] OpcodeStore = 7'b01_000_11;
-  localparam bit [`OPCODE_SIZE] OpcodeBranch = 7'b11_000_11;
-  localparam bit [`OPCODE_SIZE] OpcodeJalr = 7'b11_001_11;
-  localparam bit [`OPCODE_SIZE] OpcodeMiscMem = 7'b00_011_11;
-  localparam bit [`OPCODE_SIZE] OpcodeJal = 7'b11_011_11;
+  localparam bit [`OPCODE_SIZE] OpLoad = 7'b00_000_11;
+  localparam bit [`OPCODE_SIZE] OpStore = 7'b01_000_11;
+  localparam bit [`OPCODE_SIZE] OpBranch = 7'b11_000_11;
+  localparam bit [`OPCODE_SIZE] OpJalr = 7'b11_001_11;
+  localparam bit [`OPCODE_SIZE] OpMiscMem = 7'b00_011_11;
+  localparam bit [`OPCODE_SIZE] OpJal = 7'b11_011_11;
 
-  localparam bit [`OPCODE_SIZE] OpcodeRegImm = 7'b00_100_11;
-  localparam bit [`OPCODE_SIZE] OpcodeRegReg = 7'b01_100_11;
-  localparam bit [`OPCODE_SIZE] OpcodeEnviron = 7'b11_100_11;
+  localparam bit [`OPCODE_SIZE] OpRegImm = 7'b00_100_11;
+  localparam bit [`OPCODE_SIZE] OpRegReg = 7'b01_100_11;
+  localparam bit [`OPCODE_SIZE] OpEnviron = 7'b11_100_11;
 
-  localparam bit [`OPCODE_SIZE] OpcodeAuipc = 7'b00_101_11;
-  localparam bit [`OPCODE_SIZE] OpcodeLui = 7'b01_101_11;
+  localparam bit [`OPCODE_SIZE] OpAuipc = 7'b00_101_11;
+  localparam bit [`OPCODE_SIZE] OpLui = 7'b01_101_11;
 
   // cycle counter, not really part of any stage but useful for orienting within GtkWave
   // do not rename this as the testbench uses this value
@@ -372,9 +387,9 @@ module DatapathPipelined (
   RegFile rf (
     .clk(clk),
     .rst(rst),
-    .we(we),
-    .rd(insn_rd),
-    .rd_data(rd_data),
+    .we(w_we),
+    .rd(w_insn_rd),
+    .rd_data(w_rd_data),
     .rs1(d_insn_rs1),
     .rs2(d_insn_rs2),
     .rs1_data(d_rs1_data),
@@ -490,8 +505,8 @@ module DatapathPipelined (
   wire d_insn_rem    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b110;
   wire d_insn_remu   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b111;
 
-  wire d_insn_ecall = insn_opcode == OpEnviron && d_insn[31:7] == 25'd0;
-  wire d_insn_fence = insn_opcode == OpMiscMem;
+  wire d_insn_ecall = d_insn_opcode == OpEnviron && d_insn[31:7] == 25'd0;
+  wire d_insn_fence = d_insn_opcode == OpMiscMem;
 
 
 
@@ -500,20 +515,45 @@ module DatapathPipelined (
   /* EXECUTE STAGE */
   /****************/
 
-  stage_state_t execute_state;
+  stage_execute_t execute_state;
   always_ff @(posedge clk) begin
     if (rst) begin
       execute_state <= '{
         pc: 0,
         insn: 0,
-        cycle_status: CYCLE_RESET
+        cycle_status: CYCLE_RESET,
+        opcode: 0,
+          
+        insn_rd: 0,
+
+        imm_i: 0,
+        imm_s: 0,
+        imm_b: 0,
+        imm_j: 0,
+        
+        imm_i_sext: 0,
+        imm_s_sext: 0,
+        imm_b_sext: 0,
+        imm_j_sext: 0,
+
+        imm_u: 0,
+
+        // data taken from register file
+        rs1_data: 0,
+        rs2_data: 0,
+
+        // insn_set containing the insn signal
+        insn_key: 0,
+
+        halt: 0
       };
     end else begin
-      begin
         execute_state <= '{
           pc: d_pc_current,
           insn: d_insn,
           cycle_status: d_cycle_status,
+
+          opcode: d_insn_opcode,
           
           insn_rd: d_insn_rd,
 
@@ -534,55 +574,13 @@ module DatapathPipelined (
           rs2_data: d_rs2_data,
 
           // insn_set containing the insn signal
-          insn_set: d_insn_set,
+          insn_key: d_insn_set,
 
-          // memory signals
-          // addr_to_dmem; // cannot determine until execute
-          // store_data_to_dmem; // 
-          // store_we_to_dmem;
-
-
-          //halt;
+          halt: 0
 
         };
-      end
     end
   end
-
-  // CLA inputs
-  logic [31:0] cla_a;
-  logic [31:0] cla_b;
-  logic cla_cin;
-  logic [31:0] cla_sum;
-
-  cla adder(.a(cla_a), .b(cla_b), .cin(cla_cin), .sum(cla_sum));
-
-  // intermediary for multiplier instructions
-  logic [63:0] multiple;
-  logic [31:0] product_temp;
-
-  // division vars
-
-  wire [31:0] signed_quotient;
-  wire [31:0] signed_remainder;
-  
-  wire [31:0] unsigned_divisor;
-  wire [31:0] unsigned_dividend;
-  wire [31:0] unsigned_quotient;
-  wire [31:0] unsigned_remainder;
-
-  // convert dividend and divisor to unsigned
-  assign unsigned_dividend = rs1_data[31] ? (~rs1_data + 1) : rs1_data;
-  assign unsigned_divisor = rs2_data[31] ? (~rs2_data + 1) : rs2_data;
-
-  // convert outputs from unsigned division to be signed
-  assign signed_quotient = (rs1_data[31] ^ rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
-  assign signed_remainder = (rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
-
-  // need to wait 8 cycles to run
-  DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
-          .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
-          .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
 
   // Execute Signals
   logic x_we;
@@ -591,9 +589,9 @@ module DatapathPipelined (
   logic [`REG_SIZE] x_pc = execute_state.pc;
   logic [`INSN_SIZE] x_insn = execute_state.insn;
   cycle_status_e x_cycle_status = execute_state.cycle_status;
+
+  logic [`OPCODE_SIZE] x_opcode = execute_state.opcode;
   
-  logic [4:0] x_insn_rs1 = execute_state.insn_rs1;
-  logic [4:0] x_insn_rs2 = execute_state.insn_rs2;
   logic [4:0] x_insn_rd = execute_state.insn_rd;
 
   logic [11:0] x_imm_i = execute_state.imm_i;
@@ -613,39 +611,198 @@ module DatapathPipelined (
   logic [`REG_SIZE] x_rs2_data = execute_state.rs2_data;
 
   // insn_set containing the insn signal
-  insn_set x_insn_set = execute_state.insn_set;
+  insn_set x_insn_set = execute_state.insn_key;
+
+  // memory signals
+  logic [`REG_SIZE] x_addr_to_dmem;
+  logic [`REG_SIZE] x_store_mem_to_dmem;
+  logic [3:0] x_store_we_to_dmem;
 
 
 
-  case ()
+
+  // CLA inputs
+  logic [31:0] cla_a;
+  logic [31:0] cla_b;
+  logic cla_cin;
+  logic [31:0] cla_sum;
+
+  //cla adder(.a(cla_a), .b(cla_b), .cin(cla_cin), .sum(cla_sum));
+
+  // intermediary for multiplier instructions
+  logic [63:0] multiple;
+  logic [31:0] product_temp;
+
+  // division vars
+
+  wire [31:0] signed_quotient;
+  wire [31:0] signed_remainder;
+  
+  wire [31:0] unsigned_divisor;
+  wire [31:0] unsigned_dividend;
+  wire [31:0] unsigned_quotient;
+  wire [31:0] unsigned_remainder;
+
+  // convert dividend and divisor to unsigned
+  assign unsigned_dividend = x_rs1_data[31] ? (~x_rs1_data + 1) : x_rs1_data;
+  assign unsigned_divisor = x_rs2_data[31] ? (~x_rs2_data + 1) : x_rs2_data;
+
+  // convert outputs from unsigned division to be signed
+  assign signed_quotient = (x_rs1_data[31] ^ x_rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
+  assign signed_remainder = (x_rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
+
+  // need to wait 8 cycles to run
+  // DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
+  //         .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
+  //         .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
+
+  
+
+
+  always_comb begin
+    // register signals
+    x_we = 0;
+    x_rd_data = 0;
+
+    // data memory signals
+    x_addr_to_dmem = 0;
+    x_store_mem_to_dmem = 0;
+    x_store_we_to_dmem = 0;
+
+    case (x_opcode)
       OpLui: begin
         x_we = 1;
-        rd_data = x_imm_u << 12;
-               
+        x_rd_data = x_imm_u << 12;
+                
       end
 
       OpAuipc : begin
         x_we = 1;
-        rd_data = x_pc + (x_imm_u << 12);
+        x_rd_data = x_pc + (x_imm_u << 12);
       end
-  endcase
+
+      default: begin
+        //illegal_insn = 1'b1;
+      end
+    endcase
+  end
+  
   
   /****************/
   /* MEMORY STAGE */
   /****************/
 
-  
+  stage_memory_t memory_state;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      memory_state <= '{
+        pc: 0,
+        insn: 0,
+        cycle_status: CYCLE_RESET,
+
+        // register signals
+        insn_rd: 0,
+        rd_data: 0,
+        we: 0,
+
+        // memory signals
+        addr_to_dmem: 0,
+        store_data_to_dmem: 0,
+        store_we_to_dmem: 0,
+
+        halt: 0
+      };
+    end else begin
+        memory_state <= '{
+          pc: x_pc,
+          insn: x_insn,
+          cycle_status: x_cycle_status,
+
+          // register signals
+          insn_rd: x_insn_rd,
+          rd_data: x_rd_data,
+          we: x_we,
+
+          // memory signals
+          addr_to_dmem: x_addr_to_dmem,
+          store_data_to_dmem: x_store_mem_to_dmem,
+          store_we_to_dmem: x_store_we_to_dmem,
+
+          halt: 0
+
+        };
+    end
+  end
+
+  // MEMORY SIGNALS
+
+  logic [`REG_SIZE] m_pc = memory_state.pc;
+  logic [`INSN_SIZE] m_insn = memory_state.insn;
+  cycle_status_e m_cycle_status = memory_state.cycle_status;
+
+  // register signals
+  logic [4:0] m_insn_rd = memory_state.insn_rd;
+  logic [31:0] m_rd_data = memory_state.rd_data;
+  logic m_we = memory_state.we;
+
+  // memory signals
+  logic [`REG_SIZE] m_addr_to_dmem = memory_state.addr_to_dmem;
+  logic [`REG_SIZE] m_store_data_to_dmem = memory_state.store_data_to_dmem;
+  logic [3:0] m_store_we_to_dmem = memory_state.store_we_to_dmem;
+
+
+
 
   /****************/
   /* WRITE STAGE */
   /****************/
 
-  // data to load into register
-  logic [31:0] rd_data;
-
-  // write enable
-  logic we;
   
+  stage_write_t write_state;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      write_state <= '{
+        pc: 0,
+        insn: 0,
+        cycle_status: CYCLE_RESET,
+
+        // register signals
+        insn_rd: 0,
+        rd_data: 0,
+        we: 0,
+
+        halt: 0
+      };
+    end else begin
+      write_state <= '{
+        pc: m_pc,
+        insn: m_insn,
+        cycle_status: m_cycle_status,
+
+        // register signals
+        insn_rd: m_insn_rd,
+        rd_data: m_rd_data,
+        we: m_we,
+
+        halt: 0
+
+      };
+    end
+  end
+
+  // WRITE SIGNALS
+  logic [`REG_SIZE] w_pc = write_state.pc;
+  logic [`INSN_SIZE] w_insn = write_state.insn;
+  cycle_status_e w_cycle_status = write_state.cycle_status;
+
+  // register signals
+  logic [4:0] w_insn_rd = write_state.insn_rd;
+  logic [31:0] w_rd_data = write_state.rd_data;
+  logic w_we = write_state.we;
+
+
+
+
 endmodule
 
 module MemorySingleCycle #(
