@@ -212,8 +212,6 @@ module DatapathMultiCycle (
     end
   end
 
-  // NOTE: don't rename your RegFile instance as the tests expect it to be `rf`
-  // TODO: you will need to edit the port connections, however.
   wire [`REG_SIZE] rs1_data;
   wire [`REG_SIZE] rs2_data;
   RegFile rf (
