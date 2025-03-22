@@ -14,7 +14,7 @@
 `endif
 
 `ifndef SYNTHESIS
-`include "../hw4-multicycle/RvDisassembler.sv"
+`include "../hw3-singlecycle/RvDisassembler.sv"
 `endif
 `include "../hw2b-cla/cla.sv"
 `include "../hw4-multicycle/DividerUnsignedPipelined.sv"
@@ -196,6 +196,7 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
+  logic [`OPCODE_SIZE] opcode;
 
   // register signals
   logic [4:0] insn_rd;
@@ -221,6 +222,7 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
+  logic [`OPCODE_SIZE] opcode;
 
   // register signals
   logic [4:0] insn_rd;
@@ -295,10 +297,10 @@ module DatapathPipelined (
     cla_b = x_rs2_data;
     cla_cin = 0;
     
-    if (execute_state.insn_set.insn_sub) begin
-      cla_b = ~x_rs1_data;
+    if (x_insn_key.insn_sub) begin
+      cla_b = ~x_rs2_data;
       cla_cin = 1;
-    end else if (execute_state.insn_set.insn_addi) begin
+    end else if (x_insn_key.insn_addi) begin
       cla_b = x_imm_i_sext;
     end
   end
@@ -438,11 +440,13 @@ module DatapathPipelined (
   logic [4:0] d_insn_rs1;
   logic [2:0] d_insn_funct3;
   logic [4:0] d_insn_rd;
+  logic [4:0] d_insn_rd_temp;
   logic [`OPCODE_SIZE] d_insn_opcode;
 
   // split R-type instruction - see section 2.2 of RiscV spec
-  assign {d_insn_funct7, d_insn_rs2, d_insn_rs1, d_insn_funct3, d_insn_rd, d_insn_opcode} = d_insn;
+  assign {d_insn_funct7, d_insn_rs2, d_insn_rs1, d_insn_funct3, d_insn_rd_temp, d_insn_opcode} = d_insn;
 
+  assign d_insn_rd = (d_insn_opcode == OpBranch) ? 0 : d_insn_rd_temp;
   // setup for I, S, B & J type instructions
   // I - short immediates and loads
   logic [11:0] d_imm_i;
@@ -454,7 +458,7 @@ module DatapathPipelined (
 
   // B - conditionals
   logic [12:0] d_imm_b;
-  assign {d_imm_b[12], d_imm_b[10:5]} = d_insn_funct7, {d_imm_b[4:1], d_imm_b[11]} = d_insn_rd, d_imm_b[0] = 1'b0;
+  assign {d_imm_b[12], d_imm_b[10:5]} = d_insn_funct7, {d_imm_b[4:1], d_imm_b[11]} = d_insn_rd_temp, d_imm_b[0] = 1'b0;
 
   // J - unconditional jumps
   logic [20:0] d_imm_j;
@@ -480,14 +484,19 @@ module DatapathPipelined (
   logic [`REG_SIZE] d_rs1_data;
   logic [`REG_SIZE] d_rs2_data;
 
+  logic [4:0] w_insn_rd_bypass;
+  assign w_insn_rd_bypass = (w_opcode == OpBranch) ? 0 : w_insn_rd;
+
   // WD Bypass
   always_comb begin
     d_rs1_data = d_rs1_data_temp;
     d_rs2_data = d_rs2_data_temp;
-    if (w_insn_rd == d_insn_rs1 && d_insn_rs1 != 0) begin
+  
+  
+    if (w_insn_rd_bypass == d_insn_rs1 && d_insn_rs1 != 0) begin
       d_rs1_data = w_rd_data;
     end
-    if (w_insn_rd == d_insn_rs2 && d_insn_rs2 != 0) begin
+    if (w_insn_rd_bypass == d_insn_rs2 && d_insn_rs2 != 0) begin
       d_rs2_data = w_rd_data;
     end
 
@@ -740,7 +749,7 @@ module DatapathPipelined (
     if (x_insn_rs1 != 0) begin
       if (m_insn_rd == x_insn_rs1) begin
         x_rs1_data = m_rd_data;
-      end else if (w_insn_rd == x_insn_rs1) begin
+      end else if (w_insn_rd_bypass == x_insn_rs1) begin
         x_rs1_data = w_rd_data;
       end
     end
@@ -748,7 +757,7 @@ module DatapathPipelined (
     if (x_insn_rs2 != 0) begin
       if (m_insn_rd == x_insn_rs2) begin
         x_rs2_data = m_rd_data;
-      end else if (w_insn_rd == x_insn_rs2) begin
+      end else if (w_insn_rd_bypass == x_insn_rs2) begin
         x_rs2_data = w_rd_data;
       end
     end
@@ -941,10 +950,10 @@ module DatapathPipelined (
             x_branch_taken = $signed(x_rs1_data) >= $signed(x_rs2_data);
           end
           x_insn_key.insn_bltu: begin
-            x_branch_taken = x_rs1_data < x_rs2_data;
+            x_branch_taken = $signed(x_rs1_data) < $unsigned(x_rs2_data);
           end
           x_insn_key.insn_bgeu: begin
-            x_branch_taken = x_rs1_data >= x_rs2_data;
+            x_branch_taken = $signed(x_rs1_data) >= $unsigned(x_rs2_data);
           end
          
         endcase
@@ -980,6 +989,7 @@ module DatapathPipelined (
         pc: 0,
         insn: 0,
         cycle_status: CYCLE_RESET,
+        opcode: 0,
 
         // register signals
         insn_rd: 0,
@@ -1003,6 +1013,7 @@ module DatapathPipelined (
           pc: x_pc,
           insn: x_insn,
           cycle_status: x_cycle_status,
+          opcode: x_opcode,
 
           // register signals
           insn_rd: x_insn_rd,
@@ -1032,6 +1043,9 @@ module DatapathPipelined (
   assign m_insn = memory_state.insn;
   cycle_status_e m_cycle_status;
   assign m_cycle_status = memory_state.cycle_status;
+
+  logic [`OPCODE_SIZE] m_opcode;
+  assign m_opcode = memory_state.opcode;
 
   // register signals
   logic [4:0] m_insn_rd;
@@ -1065,6 +1079,7 @@ module DatapathPipelined (
         pc: 0,
         insn: 0,
         cycle_status: CYCLE_RESET,
+        opcode: 0,
 
         // register signals
         insn_rd: 0,
@@ -1078,6 +1093,7 @@ module DatapathPipelined (
         pc: m_pc,
         insn: m_insn,
         cycle_status: m_cycle_status,
+        opcode: m_opcode,
 
         // register signals
         insn_rd: m_insn_rd,
@@ -1097,6 +1113,9 @@ module DatapathPipelined (
   assign w_insn = write_state.insn;
   cycle_status_e w_cycle_status;
   assign w_cycle_status = write_state.cycle_status;
+
+  logic [`OPCODE_SIZE] w_opcode;
+  assign w_opcode = write_state.opcode;
 
   // register signals
   logic [4:0] w_insn_rd;
