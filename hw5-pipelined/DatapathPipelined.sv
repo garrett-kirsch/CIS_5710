@@ -82,11 +82,14 @@ endmodule
 
 // Struct to store insn signal
 typedef struct packed {
+
+  // misc and jump insns
   logic insn_lui;
   logic insn_auipc;
   logic insn_jal;
   logic insn_jalr;
 
+  // branch insns
   logic insn_beq;
   logic insn_bne;
   logic insn_blt;
@@ -94,27 +97,30 @@ typedef struct packed {
   logic insn_bltu;
   logic insn_bgeu;
 
+  // load insns
   logic insn_lb;
   logic insn_lh;
   logic insn_lw;
   logic insn_lbu;
   logic insn_lhu;
 
+  // store insns
   logic insn_sb;
   logic insn_sh;
   logic insn_sw;
 
+  // immediate insns
   logic insn_addi;
   logic insn_slti;
   logic insn_sltiu;
   logic insn_xori;
   logic insn_ori;
   logic insn_andi;
-
   logic insn_slli;
   logic insn_srli;
   logic insn_srai;
 
+  // regreg insns
   logic insn_add;
   logic insn_sub ;
   logic insn_sll ;
@@ -125,7 +131,6 @@ typedef struct packed {
   logic insn_sra;
   logic insn_or;
   logic insn_and;
-
   logic insn_mul;
   logic insn_mulh;
   logic insn_mulhsu;
@@ -135,11 +140,10 @@ typedef struct packed {
   logic insn_rem;
   logic insn_remu;
 
+  // more misc insns
   logic insn_ecall;
   logic insn_fence;
-} insn_set;
-
-// Credit to Manvi Agarwal for the insn_set structure
+} insn_key;
 
 /** state at the start of Decode stage */
 typedef struct packed {
@@ -174,8 +178,12 @@ typedef struct packed {
   logic [`REG_SIZE] rs1_data;
   logic [`REG_SIZE] rs2_data;
 
-  // insn_set containing the insn signal
-  insn_set insn_key;
+  logic [4:0] insn_rs1;
+  logic [4:0] insn_rs2;
+  
+
+  // insn_key containing the insn signal
+  insn_key insn_set;
 
   logic halt;
 
@@ -200,6 +208,9 @@ typedef struct packed {
   logic [`REG_SIZE] store_data_to_dmem;
   logic [3:0] store_we_to_dmem;
 
+  // branch signal
+  logic [`REG_SIZE] branched_pc; // represents the pc value that will be branched to IF there is a branch
+  logic branch_taken; // 1: branch, 0: no branch
 
   logic halt;
 } stage_memory_t;
@@ -255,6 +266,76 @@ module DatapathPipelined (
   localparam bit [`OPCODE_SIZE] OpAuipc = 7'b00_101_11;
   localparam bit [`OPCODE_SIZE] OpLui = 7'b01_101_11;
 
+  // ALL MODULES
+
+  // REGFILE
+  // WE, rd, and rd_data should come from the WRITE stage
+  RegFile rf (
+    .clk(clk),
+    .rst(rst),
+    .we(w_we),
+    .rd(w_insn_rd),
+    .rd_data(w_rd_data),
+    .rs1(d_insn_rs1),
+    .rs2(d_insn_rs2),
+    .rs1_data(d_rs1_data_temp),
+    .rs2_data(d_rs2_data_temp));
+
+
+  // CLA inputs
+  logic [31:0] cla_a;
+  logic [31:0] cla_b;
+  logic cla_cin;
+  logic [31:0] cla_sum;
+
+  assign cla_a = x_rs1_data;
+  
+  // determine b and cin for the cla
+  always_comb begin
+    cla_b = x_rs2_data;
+    cla_cin = 0;
+    
+    if (execute_state.insn_set.insn_sub) begin
+      cla_b = ~x_rs1_data;
+      cla_cin = 1;
+    end else if (execute_state.insn_set.insn_addi) begin
+      cla_b = x_imm_i_sext;
+    end
+  end
+
+  cla adder(.a(cla_a), .b(cla_b), .cin(cla_cin), .sum(cla_sum));
+
+  // intermediary for multiplier instructions
+  logic [63:0] multiple;
+  logic [31:0] product_temp;
+
+  // division vars
+
+  wire [31:0] signed_quotient;
+  wire [31:0] signed_remainder;
+  
+  wire [31:0] unsigned_divisor;
+  wire [31:0] unsigned_dividend;
+  wire [31:0] unsigned_quotient;
+  wire [31:0] unsigned_remainder;
+
+  // convert dividend and divisor to unsigned
+  assign unsigned_dividend = execute_state.rs1_data[31] ? (~execute_state.rs1_data + 1) : execute_state.rs1_data;
+  assign unsigned_divisor = execute_state.rs2_data[31] ? (~execute_state.rs2_data + 1) : execute_state.rs2_data;
+
+  // convert outputs from unsigned division to be signed
+  assign signed_quotient = (execute_state.rs1_data[31] ^ execute_state.rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
+  assign signed_remainder = (execute_state.rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
+
+  // need to wait 8 cycles to run
+  DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
+          .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
+          .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
+
+
+
+
+
   // cycle counter, not really part of any stage but useful for orienting within GtkWave
   // do not rename this as the testbench uses this value
   logic [`REG_SIZE] cycles_current;
@@ -271,7 +352,7 @@ module DatapathPipelined (
   /***************/
 
   logic [`REG_SIZE] f_pc_current;
-  wire [`REG_SIZE] f_insn;
+  wire [`INSN_SIZE] f_insn;
   cycle_status_e f_cycle_status;
 
   // program counter
@@ -280,6 +361,9 @@ module DatapathPipelined (
       f_pc_current <= 32'd0;
       // NB: use CYCLE_NO_STALL since this is the value that will persist after the last reset cycle
       f_cycle_status <= CYCLE_NO_STALL;
+    end else if (memory_state.branch_taken) begin
+      // BRANCH TO NEW PC
+      f_pc_current <= memory_state.branched_pc;
     end else begin
       f_cycle_status <= CYCLE_NO_STALL;
       f_pc_current <= f_pc_current + 4;
@@ -312,14 +396,19 @@ module DatapathPipelined (
         insn: 0,
         cycle_status: CYCLE_RESET
       };
+    end else if (x_branch_taken) begin
+      // FLUSH
+      decode_state <= '{
+        pc: 0,
+        insn: 0,
+        cycle_status: f_cycle_status
+      };
     end else begin
-      begin
         decode_state <= '{
           pc: f_pc_current,
           insn: f_insn,
           cycle_status: f_cycle_status
         };
-      end
     end
   end
   wire [255:0] d_disasm;
@@ -330,185 +419,170 @@ module DatapathPipelined (
       .disasm(d_disasm)
   );
 
-  logic [`REG_SIZE] d_pc_current = decode_state.pc;
-  wire [`REG_SIZE] d_insn = decode_state.insn;
-  cycle_status_e d_cycle_status = decode_state.cycle_status;
+  logic [`REG_SIZE] d_pc_current;
+  logic [`INSN_SIZE] d_insn;
+  cycle_status_e d_cycle_status;
+
+  assign d_pc_current = decode_state.pc;
+  assign d_insn = decode_state.insn;
+  assign d_cycle_status = decode_state.cycle_status;
 
 
   // DECODE INSN
 
   // components of the instruction
-  wire [6:0] d_insn_funct7;
-  wire [4:0] d_insn_rs2;
-  wire [4:0] d_insn_rs1;
-  wire [2:0] d_insn_funct3;
-  wire [4:0] d_insn_rd;
-  wire [`OPCODE_SIZE] d_insn_opcode;
+  logic [6:0] d_insn_funct7;
+  logic [4:0] d_insn_rs2;
+  logic [4:0] d_insn_rs1;
+  logic [2:0] d_insn_funct3;
+  logic [4:0] d_insn_rd;
+  logic [`OPCODE_SIZE] d_insn_opcode;
 
   // split R-type instruction - see section 2.2 of RiscV spec
   assign {d_insn_funct7, d_insn_rs2, d_insn_rs1, d_insn_funct3, d_insn_rd, d_insn_opcode} = d_insn;
 
   // setup for I, S, B & J type instructions
   // I - short immediates and loads
-  wire [11:0] d_imm_i;
+  logic [11:0] d_imm_i;
   assign d_imm_i = d_insn[31:20];
 
   // S - stores
-  wire [11:0] d_imm_s;
+  logic [11:0] d_imm_s;
   assign d_imm_s[11:5] = d_insn_funct7, d_imm_s[4:0] = d_insn_rd;
 
   // B - conditionals
-  wire [12:0] d_imm_b;
+  logic [12:0] d_imm_b;
   assign {d_imm_b[12], d_imm_b[10:5]} = d_insn_funct7, {d_imm_b[4:1], d_imm_b[11]} = d_insn_rd, d_imm_b[0] = 1'b0;
 
   // J - unconditional jumps
-  wire [20:0] d_imm_j;
+  logic [20:0] d_imm_j;
   assign {d_imm_j[20], d_imm_j[10:1], d_imm_j[11], d_imm_j[19:12], d_imm_j[0]} = {d_insn[31:12], 1'b0};
 
-  wire [`REG_SIZE] d_imm_i_sext = {{20{d_imm_i[11]}}, d_imm_i[11:0]};
-  wire [`REG_SIZE] d_imm_s_sext = {{20{d_imm_s[11]}}, d_imm_s[11:0]};
-  wire [`REG_SIZE] d_imm_b_sext = {{19{d_imm_b[12]}}, d_imm_b[12:0]};
-  wire [`REG_SIZE] d_imm_j_sext = {{11{d_imm_j[20]}}, d_imm_j[20:0]};
+  logic [`REG_SIZE] d_imm_i_sext;
+  logic [`REG_SIZE] d_imm_s_sext;
+  logic [`REG_SIZE] d_imm_b_sext;
+  logic [`REG_SIZE] d_imm_j_sext;
 
-  wire [19:0] d_imm_u = d_insn[31:12];
+  assign d_imm_i_sext = {{20{d_imm_i[11]}}, d_imm_i[11:0]};
+  assign d_imm_s_sext = {{20{d_imm_s[11]}}, d_imm_s[11:0]};
+  assign d_imm_b_sext = {{19{d_imm_b[12]}}, d_imm_b[12:0]};
+  assign d_imm_j_sext = {{11{d_imm_j[20]}}, d_imm_j[20:0]};
+
+  logic [19:0] d_imm_u;
+  assign d_imm_u = d_insn[31:12];
 
   // data taken from register file
+  logic [`REG_SIZE] d_rs1_data_temp;
+  logic [`REG_SIZE] d_rs2_data_temp;
+
   logic [`REG_SIZE] d_rs1_data;
   logic [`REG_SIZE] d_rs2_data;
 
-  // write enable -> DETERMINED AT WRITE STAGE
-  logic we;
+  // WD Bypass
+  always_comb begin
+    d_rs1_data = d_rs1_data_temp;
+    d_rs2_data = d_rs2_data_temp;
+    if (w_insn_rd == d_insn_rs1 && d_insn_rs1 != 0) begin
+      d_rs1_data = w_rd_data;
+    end
+    if (w_insn_rd == d_insn_rs2 && d_insn_rs2 != 0) begin
+      d_rs2_data = w_rd_data;
+    end
 
-  // data to load into regfile -> DETERMINED AT WRITE STAGE or XD bypass
-  logic[`REG_SIZE] rd_data;
+  end
+
   
-  // REGFILE
-  // WE, rd, and rd_data should come from the WRITE stage
-  RegFile rf (
-    .clk(clk),
-    .rst(rst),
-    .we(w_we),
-    .rd(w_insn_rd),
-    .rd_data(w_rd_data),
-    .rs1(d_insn_rs1),
-    .rs2(d_insn_rs2),
-    .rs1_data(d_rs1_data),
-    .rs2_data(d_rs2_data));
-  
-  // determine specific insn
-  insn_set d_insn_set = '{
-    insn_lui: d_insn_lui,
-    insn_auipc: d_insn_auipc,
-    insn_jal: d_insn_jal,
-    insn_jalr: d_insn_jalr,
+  insn_key d_insn_key;
+  assign d_insn_key.insn_lui   = d_insn_opcode == OpLui;
+  assign d_insn_key.insn_auipc = d_insn_opcode == OpAuipc;
+  assign d_insn_key.insn_jal   = d_insn_opcode == OpJal;
+  assign d_insn_key.insn_jalr  = d_insn_opcode == OpJalr;
 
-    insn_beq: d_insn_beq,
-    insn_bne: d_insn_bne,
-    insn_blt: d_insn_blt,
-    insn_bge: d_insn_bge,
-    insn_bltu: d_insn_bltu,
-    insn_bgeu: d_insn_bgeu,
-    insn_lb: d_insn_lb,
-    insn_lh: d_insn_lh,
-    insn_lw: d_insn_lw,
-    insn_lbu: d_insn_lbu,
-    insn_lhu: d_insn_lhu,
+  assign d_insn_key.insn_beq  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b000;
+  assign d_insn_key.insn_bne  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b001;
+  assign d_insn_key.insn_blt  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b100;
+  assign d_insn_key.insn_bge  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b101;
+  assign d_insn_key.insn_bltu = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b110;
+  assign d_insn_key.insn_bgeu = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b111;
 
-    insn_sb: d_insn_sb,
-    insn_sh: d_insn_sh,
-    insn_sw: d_insn_sw,
+  assign d_insn_key.insn_lb  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b000;
+  assign d_insn_key.insn_lh  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b001;
+  assign d_insn_key.insn_lw  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b010;
+  assign d_insn_key.insn_lbu = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b100;
+  assign d_insn_key.insn_lhu = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b101;
 
-    insn_addi: d_insn_addi,
-    insn_slti: d_insn_slti,
-    insn_sltiu: d_insn_sltiu,
-    insn_xori: d_insn_xori,
-    insn_ori: d_insn_ori,
-    insn_andi: d_insn_andi,
+  assign d_insn_key.insn_sb = d_insn_opcode == OpStore && d_insn_funct3 == 3'b000;
+  assign d_insn_key.insn_sh = d_insn_opcode == OpStore && d_insn_funct3 == 3'b001;
+  assign d_insn_key.insn_sw = d_insn_opcode == OpStore && d_insn_funct3 == 3'b010;
 
-    insn_slli: d_insn_slli,
-    insn_srli: d_insn_srli,
-    insn_srai: d_insn_srai,
+  assign d_insn_key.insn_addi  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b000;
+  assign d_insn_key.insn_slti  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b010;
+  assign d_insn_key.insn_sltiu = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b011;
+  assign d_insn_key.insn_xori  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b100;
+  assign d_insn_key.insn_ori   = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b110;
+  assign d_insn_key.insn_andi  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b111;
 
-    insn_add: d_insn_add,
-    insn_sub: d_insn_sub,
-    insn_sll: d_insn_sll,
-    insn_slt: d_insn_slt,
-    insn_sltu: d_insn_sltu,
-    insn_xor: d_insn_xor,
-    insn_srl: d_insn_srl,
-    insn_sra: d_insn_sra,
-    insn_or: d_insn_or,
-    insn_and: d_insn_and,
+  assign d_insn_key.insn_slli = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b001 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_srli = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_srai = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'b0100000;
 
-    insn_mul: d_insn_mul,
-    insn_mulh: d_insn_mulh,
-    insn_mulhsu: d_insn_mulhsu,
-    insn_mulhu: d_insn_mulhu,
-    insn_div: d_insn_div,
-    insn_divu: d_insn_divu,
-    insn_rem: d_insn_rem,
-    insn_remu: d_insn_remu,
+  assign d_insn_key.insn_add  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b000 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_sub  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b000 && d_insn_funct7 == 7'b0100000;
+  assign d_insn_key.insn_sll  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b001 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_slt  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b010 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_sltu = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b011 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_xor  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b100 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_srl  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_sra  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'b0100000;
+  assign d_insn_key.insn_or   = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b110 && d_insn_funct7 == 7'd0;
+  assign d_insn_key.insn_and  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b111 && d_insn_funct7 == 7'd0;
 
-    insn_ecall: d_insn_ecall,
-    insn_fence: d_insn_fence
+  assign d_insn_key.insn_mul    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b000;
+  assign d_insn_key.insn_mulh   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b001;
+  assign d_insn_key.insn_mulhsu = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b010;
+  assign d_insn_key.insn_mulhu  = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b011;
+  assign d_insn_key.insn_div    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b100;
+  assign d_insn_key.insn_divu   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b101;
+  assign d_insn_key.insn_rem    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b110;
+  assign d_insn_key.insn_remu   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b111;
+
+  assign d_insn_key.insn_ecall = d_insn_opcode == OpEnviron && d_insn[31:7] == 25'd0;
+  assign d_insn_key.insn_fence = d_insn_opcode == OpMiscMem;
+
+  stage_execute_t normal_execute_state;
+  assign normal_execute_state = '{
+    pc: d_pc_current,
+    insn: d_insn,
+    cycle_status: d_cycle_status,
+
+    opcode: d_insn_opcode,
+    
+    insn_rd: d_insn_rd,
+
+    imm_i: d_imm_i,
+    imm_s: d_imm_s,
+    imm_b: d_imm_b,
+    imm_j: d_imm_j,
+    
+    imm_i_sext: d_imm_i_sext,
+    imm_s_sext: d_imm_s_sext,
+    imm_b_sext: d_imm_b_sext,
+    imm_j_sext: d_imm_j_sext,
+
+    imm_u: d_imm_u,
+
+    // data taken from register file
+    rs1_data: d_rs1_data,
+    rs2_data: d_rs2_data,
+    insn_rs1: d_insn_rs1,
+    insn_rs2: d_insn_rs2,
+
+    // insn_key containing the insn signal
+    insn_set: d_insn_key,
+
+    halt: 0
+
   };
-  wire d_insn_lui   = d_insn_opcode == OpLui;
-  wire d_insn_auipc = d_insn_opcode == OpAuipc;
-  wire d_insn_jal   = d_insn_opcode == OpJal;
-  wire d_insn_jalr  = d_insn_opcode == OpJalr;
-
-  wire d_insn_beq  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b000;
-  wire d_insn_bne  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b001;
-  wire d_insn_blt  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b100;
-  wire d_insn_bge  = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b101;
-  wire d_insn_bltu = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b110;
-  wire d_insn_bgeu = d_insn_opcode == OpBranch && d_insn_funct3 == 3'b111;
-
-  wire d_insn_lb  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b000;
-  wire d_insn_lh  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b001;
-  wire d_insn_lw  = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b010;
-  wire d_insn_lbu = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b100;
-  wire d_insn_lhu = d_insn_opcode == OpLoad && d_insn_funct3 == 3'b101;
-
-  wire d_insn_sb = d_insn_opcode == OpStore && d_insn_funct3 == 3'b000;
-  wire d_insn_sh = d_insn_opcode == OpStore && d_insn_funct3 == 3'b001;
-  wire d_insn_sw = d_insn_opcode == OpStore && d_insn_funct3 == 3'b010;
-
-  wire d_insn_addi  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b000;
-  wire d_insn_slti  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b010;
-  wire d_insn_sltiu = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b011;
-  wire d_insn_xori  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b100;
-  wire d_insn_ori   = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b110;
-  wire d_insn_andi  = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b111;
-
-  wire d_insn_slli = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b001 && d_insn_funct7 == 7'd0;
-  wire d_insn_srli = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'd0;
-  wire d_insn_srai = d_insn_opcode == OpRegImm && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'b0100000;
-
-  wire d_insn_add  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b000 && d_insn_funct7 == 7'd0;
-  wire d_insn_sub  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b000 && d_insn_funct7 == 7'b0100000;
-  wire d_insn_sll  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b001 && d_insn_funct7 == 7'd0;
-  wire d_insn_slt  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b010 && d_insn_funct7 == 7'd0;
-  wire d_insn_sltu = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b011 && d_insn_funct7 == 7'd0;
-  wire d_insn_xor  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b100 && d_insn_funct7 == 7'd0;
-  wire d_insn_srl  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'd0;
-  wire d_insn_sra  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b101 && d_insn_funct7 == 7'b0100000;
-  wire d_insn_or   = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b110 && d_insn_funct7 == 7'd0;
-  wire d_insn_and  = d_insn_opcode == OpRegReg && d_insn_funct3 == 3'b111 && d_insn_funct7 == 7'd0;
-
-  wire d_insn_mul    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b000;
-  wire d_insn_mulh   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b001;
-  wire d_insn_mulhsu = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b010;
-  wire d_insn_mulhu  = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b011;
-  wire d_insn_div    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b100;
-  wire d_insn_divu   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b101;
-  wire d_insn_rem    = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b110;
-  wire d_insn_remu   = d_insn_opcode == OpRegReg && d_insn_funct7 == 7'd1 && d_insn_funct3 == 3'b111;
-
-  wire d_insn_ecall = d_insn_opcode == OpEnviron && d_insn[31:7] == 25'd0;
-  wire d_insn_fence = d_insn_opcode == OpMiscMem;
-
-
 
 
   /****************/
@@ -541,44 +615,49 @@ module DatapathPipelined (
         // data taken from register file
         rs1_data: 0,
         rs2_data: 0,
+        insn_rs1: 0,
+        insn_rs2: 0,
 
-        // insn_set containing the insn signal
-        insn_key: 0,
+        // insn_key containing the insn signal
+        insn_set: 0,
+
+        halt: 0
+      };
+    end else if (x_branch_taken) begin
+      // FLUSH
+      execute_state <= '{
+        pc: 0,
+        insn: 0,
+        cycle_status: d_cycle_status,
+        opcode: 0,
+          
+        insn_rd: 0,
+
+        imm_i: 0,
+        imm_s: 0,
+        imm_b: 0,
+        imm_j: 0,
+        
+        imm_i_sext: 0,
+        imm_s_sext: 0,
+        imm_b_sext: 0,
+        imm_j_sext: 0,
+
+        imm_u: 0,
+
+        // data taken from register file
+        rs1_data: 0,
+        rs2_data: 0,
+        insn_rs1: 0,
+        insn_rs2: 0,
+
+        // insn_key containing the insn signal
+        insn_set: 0,
 
         halt: 0
       };
     end else begin
-        execute_state <= '{
-          pc: d_pc_current,
-          insn: d_insn,
-          cycle_status: d_cycle_status,
-
-          opcode: d_insn_opcode,
-          
-          insn_rd: d_insn_rd,
-
-          imm_i: d_imm_i,
-          imm_s: d_imm_s,
-          imm_b: d_imm_b,
-          imm_j: d_imm_j,
-          
-          imm_i_sext: d_imm_i_sext,
-          imm_s_sext: d_imm_s_sext,
-          imm_b_sext: d_imm_b_sext,
-          imm_j_sext: d_imm_j_sext,
-
-          imm_u: d_imm_u,
-
-          // data taken from register file
-          rs1_data: d_rs1_data,
-          rs2_data: d_rs2_data,
-
-          // insn_set containing the insn signal
-          insn_key: d_insn_set,
-
-          halt: 0
-
-        };
+      execute_state <= normal_execute_state;
     end
   end
 
@@ -586,78 +665,92 @@ module DatapathPipelined (
   logic x_we;
   logic [31:0] x_rd_data;
 
-  logic [`REG_SIZE] x_pc = execute_state.pc;
-  logic [`INSN_SIZE] x_insn = execute_state.insn;
-  cycle_status_e x_cycle_status = execute_state.cycle_status;
+  logic [`REG_SIZE] x_pc;
+  assign x_pc = execute_state.pc;
+  logic [`INSN_SIZE] x_insn;
+  assign x_insn = execute_state.insn;
+  cycle_status_e x_cycle_status;
+  assign x_cycle_status = execute_state.cycle_status;
 
-  logic [`OPCODE_SIZE] x_opcode = execute_state.opcode;
+  logic [`OPCODE_SIZE] x_opcode;
+  assign x_opcode = execute_state.opcode;
   
-  logic [4:0] x_insn_rd = execute_state.insn_rd;
+  logic [4:0] x_insn_rd;
+  assign x_insn_rd = execute_state.insn_rd;
 
-  logic [11:0] x_imm_i = execute_state.imm_i;
-  logic [11:0] x_imm_s = execute_state.imm_s;
-  logic [12:0] x_imm_b = execute_state.imm_b;
-  logic [20:0] x_imm_j = execute_state.imm_j;
+  logic [11:0] x_imm_i;
+  assign x_imm_i = execute_state.imm_i;
+  logic [11:0] x_imm_s;
+  assign x_imm_s = execute_state.imm_s;
+  logic [12:0] x_imm_b;
+  assign x_imm_b = execute_state.imm_b;
+  logic [20:0] x_imm_j;
+  assign x_imm_j = execute_state.imm_j;
   
-  logic [`REG_SIZE] x_imm_i_sext = execute_state.imm_i_sext;
-  logic [`REG_SIZE] x_imm_s_sext = execute_state.imm_s_sext;
-  logic [`REG_SIZE] x_imm_b_sext = execute_state.imm_b_sext;
-  logic [`REG_SIZE] x_imm_j_sext = execute_state.imm_j_sext;
+  logic [`REG_SIZE] x_imm_i_sext;
+  assign x_imm_i_sext = execute_state.imm_i_sext;
+  logic [`REG_SIZE] x_imm_s_sext;
+  assign x_imm_s_sext = execute_state.imm_s_sext;
+  logic [`REG_SIZE] x_imm_b_sext;
+  assign x_imm_b_sext = execute_state.imm_b_sext;
+  logic [`REG_SIZE] x_imm_j_sext;
+  assign x_imm_j_sext = execute_state.imm_j_sext;
 
-  logic [19:0] x_imm_u = execute_state.imm_u;
+  logic [19:0] x_imm_u;
+  assign x_imm_u = execute_state.imm_u;
 
   // data taken from register file
-  logic [`REG_SIZE] x_rs1_data = execute_state.rs1_data;
-  logic [`REG_SIZE] x_rs2_data = execute_state.rs2_data;
+  logic [`REG_SIZE] x_rs1_data_temp;
+  assign x_rs1_data_temp = execute_state.rs1_data;
+  logic [`REG_SIZE] x_rs2_data_temp;
+  assign x_rs2_data_temp = execute_state.rs2_data;
 
-  // insn_set containing the insn signal
-  insn_set x_insn_set = execute_state.insn_key;
+  logic [4:0] x_insn_rs1;
+  assign x_insn_rs1 = execute_state.insn_rs1;
+  logic [4:0] x_insn_rs2;
+  assign x_insn_rs2 = execute_state.insn_rs2;
+
+  logic [`REG_SIZE] x_rs1_data;
+  logic [`REG_SIZE] x_rs2_data;
+
+  // insn_key containing the insn signal
+  insn_key x_insn_key;
+  assign x_insn_key = execute_state.insn_set;
 
   // memory signals
   logic [`REG_SIZE] x_addr_to_dmem;
   logic [`REG_SIZE] x_store_mem_to_dmem;
   logic [3:0] x_store_we_to_dmem;
 
+  // branch signal
+  logic [`REG_SIZE] x_branched_pc; // represents the pc value that will be branched to IF there is a branch
+  logic x_branch_taken; // 1: branch, 0: no branch
 
+  // MX and WX Bypass
 
+  always_comb begin
+    // default
+    x_rs1_data = x_rs1_data_temp;
+    x_rs2_data = x_rs2_data_temp;
 
-  // CLA inputs
-  logic [31:0] cla_a;
-  logic [31:0] cla_b;
-  logic cla_cin;
-  logic [31:0] cla_sum;
+    // rs1_data
+    if (x_insn_rs1 != 0) begin
+      if (m_insn_rd == x_insn_rs1) begin
+        x_rs1_data = m_rd_data;
+      end else if (w_insn_rd == x_insn_rs1) begin
+        x_rs1_data = w_rd_data;
+      end
+    end
+    // rs2_data
+    if (x_insn_rs2 != 0) begin
+      if (m_insn_rd == x_insn_rs2) begin
+        x_rs2_data = m_rd_data;
+      end else if (w_insn_rd == x_insn_rs2) begin
+        x_rs2_data = w_rd_data;
+      end
+    end
 
-  //cla adder(.a(cla_a), .b(cla_b), .cin(cla_cin), .sum(cla_sum));
-
-  // intermediary for multiplier instructions
-  logic [63:0] multiple;
-  logic [31:0] product_temp;
-
-  // division vars
-
-  wire [31:0] signed_quotient;
-  wire [31:0] signed_remainder;
-  
-  wire [31:0] unsigned_divisor;
-  wire [31:0] unsigned_dividend;
-  wire [31:0] unsigned_quotient;
-  wire [31:0] unsigned_remainder;
-
-  // convert dividend and divisor to unsigned
-  assign unsigned_dividend = x_rs1_data[31] ? (~x_rs1_data + 1) : x_rs1_data;
-  assign unsigned_divisor = x_rs2_data[31] ? (~x_rs2_data + 1) : x_rs2_data;
-
-  // convert outputs from unsigned division to be signed
-  assign signed_quotient = (x_rs1_data[31] ^ x_rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
-  assign signed_remainder = (x_rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
-
-  // need to wait 8 cycles to run
-  // DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
-  //         .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
-  //         .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
-
-  
-
+  end
 
   always_comb begin
     // register signals
@@ -668,6 +761,13 @@ module DatapathPipelined (
     x_addr_to_dmem = 0;
     x_store_mem_to_dmem = 0;
     x_store_we_to_dmem = 0;
+
+    //
+    multiple = 0;
+
+    // branch signals
+    x_branched_pc = 0; 
+    x_branch_taken = 0;
 
     case (x_opcode)
       OpLui: begin
@@ -680,6 +780,161 @@ module DatapathPipelined (
         x_we = 1;
         x_rd_data = x_pc + (x_imm_u << 12);
       end
+
+      // I-TYPE
+      OpRegImm : begin // rs_data = rs1_data _ immi
+        x_we = 1;
+        
+        case (1)
+          x_insn_key.insn_addi: begin
+            x_rd_data = cla_sum;
+          end
+          x_insn_key.insn_slti: begin
+            x_rd_data = $signed(x_rs1_data) < $signed(x_imm_i_sext) ? 1 : 0;
+          end
+          x_insn_key.insn_sltiu: begin
+            x_rd_data = x_rs1_data < x_imm_i_sext ? 1 : 0;
+          end
+          x_insn_key.insn_xori: begin
+            x_rd_data = x_rs1_data ^ x_imm_i_sext;
+          end
+          x_insn_key.insn_ori: begin
+            x_rd_data = x_rs1_data | x_imm_i_sext;
+          end
+          x_insn_key.insn_andi: begin
+            x_rd_data = x_rs1_data & x_imm_i_sext;
+          end
+          x_insn_key.insn_slli: begin
+            x_rd_data = x_rs1_data << x_imm_i[4:0];
+          end
+          x_insn_key.insn_srli: begin
+            x_rd_data = x_rs1_data >> x_imm_i[4:0];
+          end
+          x_insn_key.insn_srai: begin
+            x_rd_data = $signed(x_rs1_data) >>> (x_imm_i[4:0]);
+          end
+          
+        endcase
+      // R-TYPE 
+      end
+
+      OpRegReg: begin // rs_data = rs1_data _ rs2_data
+        x_we = 1;
+        case (1) 
+          x_insn_key.insn_add: begin
+            x_rd_data = cla_sum;
+          end
+          x_insn_key.insn_sub: begin
+            x_rd_data = cla_sum;
+          end
+          x_insn_key.insn_sll: begin
+            x_rd_data = x_rs1_data << x_rs2_data[4:0];
+          end
+          x_insn_key.insn_slt: begin
+            x_rd_data = $signed(x_rs1_data) < $signed(x_rs2_data) ? 1 : 0;
+          end
+          x_insn_key.insn_sltu: begin
+            x_rd_data = x_rs1_data < x_rs2_data ? 1 : 0;
+          end
+          x_insn_key.insn_xor: begin
+            x_rd_data = x_rs1_data ^ x_rs2_data;
+          end
+          x_insn_key.insn_srl: begin
+            x_rd_data = x_rs1_data >> (x_rs2_data[4:0]);
+          end
+          x_insn_key.insn_sra: begin
+            x_rd_data = $signed(x_rs1_data) >>> (x_rs2_data[4:0]);
+          end
+          x_insn_key.insn_or: begin
+            x_rd_data = x_rs1_data | x_rs2_data;
+          end
+          x_insn_key.insn_and: begin
+            x_rd_data = x_rs1_data & x_rs2_data;
+          end
+          // Multiply
+          x_insn_key.insn_mul: begin
+            multiple = (x_rs1_data * x_rs2_data);
+            x_rd_data = multiple[31:0];
+          end
+          x_insn_key.insn_mulh: begin
+            multiple = $signed(x_rs1_data) * $signed(x_rs2_data);
+            x_rd_data = multiple[63:32];
+          end
+          x_insn_key.insn_mulhsu: begin
+            multiple = {{32{x_rs1_data[31]}}, x_rs1_data} * {{32{1'b0}}, x_rs2_data};
+            x_rd_data = multiple[63:32];
+          end
+          x_insn_key.insn_mulhu: begin
+            multiple = $unsigned(x_rs1_data) * $unsigned(x_rs2_data);
+            x_rd_data = multiple[63:32];
+          end
+          // Divide
+          // x_insn_key.insn_div: begin
+          //   if (unsigned_divisor == 0) begin
+          //     // return -1 if dividing by zero
+          //     x_rd_data = 32'hFFFFFFFF; 
+          //   end else begin
+          //     x_rd_data = signed_quotient;
+          //   end
+
+          //   // check if divide is not finished yet
+          //   // if (divide_count != 3'b111) begin
+          //   //   pcNext = pcCurrent;
+          //   // end
+          // end
+          // x_insn_key.insn_divu: begin
+          //   x_rd_data = unsigned_quotient;
+          //   // check if divide is not finished yet
+          //   // if (divide_count != 3'b111) begin
+          //   //   pcNext = pcCurrent;
+          //   // end
+          // end
+          // // Modulus
+          // x_insn_key.insn_rem: begin
+          //   x_rd_data = signed_remainder;
+          //   // // check if divide is not finished yet
+          //   // if (divide_count != 3'b111) begin
+          //   //   pcNext = pcCurrent;            
+          //   // end
+          // end
+          // x_insn_key.insn_remu: begin
+          //   x_rd_data = unsigned_remainder;
+          //   // check if divide is not finished yet
+          //   // if (divide_count != 3'b111) begin
+          //   //   pcNext = pcCurrent;
+
+          //   // end
+          // end
+
+        endcase
+      end
+
+      OpBranch: begin
+        x_branched_pc = x_pc + x_imm_b_sext;
+        case (1)
+          x_insn_key.insn_beq: begin
+            x_branch_taken = x_rs1_data == x_rs2_data;
+          end
+          x_insn_key.insn_bne: begin
+            x_branch_taken = x_rs1_data != x_rs2_data;
+          end
+          x_insn_key.insn_blt: begin
+            x_branch_taken = $signed(x_rs1_data) < $signed(x_rs2_data);
+          end
+          x_insn_key.insn_bge: begin
+            x_branch_taken = $signed(x_rs1_data) >= $signed(x_rs2_data);
+          end
+          x_insn_key.insn_bltu: begin
+            x_branch_taken = x_rs1_data < x_rs2_data;
+          end
+          x_insn_key.insn_bgeu: begin
+            x_branch_taken = x_rs1_data >= x_rs2_data;
+          end
+         
+        endcase
+        
+      end
+
 
       default: begin
         //illegal_insn = 1'b1;
@@ -710,6 +965,11 @@ module DatapathPipelined (
         store_data_to_dmem: 0,
         store_we_to_dmem: 0,
 
+        // branch signals
+        branched_pc: 0, // represents the pc value that will be branched to IF there is a branch
+        branch_taken: 0, // 1: branch, 0: no branch
+
+
         halt: 0
       };
     end else begin
@@ -728,6 +988,10 @@ module DatapathPipelined (
           store_data_to_dmem: x_store_mem_to_dmem,
           store_we_to_dmem: x_store_we_to_dmem,
 
+          // branch signals
+          branched_pc: x_branched_pc, // represents the pc value that will be branched to IF there is a branch
+          branch_taken: x_branch_taken, // 1: branch, 0: no branch
+
           halt: 0
 
         };
@@ -736,19 +1000,28 @@ module DatapathPipelined (
 
   // MEMORY SIGNALS
 
-  logic [`REG_SIZE] m_pc = memory_state.pc;
-  logic [`INSN_SIZE] m_insn = memory_state.insn;
-  cycle_status_e m_cycle_status = memory_state.cycle_status;
+  logic [`REG_SIZE] m_pc;
+  assign m_pc = memory_state.pc;
+  logic [`INSN_SIZE] m_insn;
+  assign m_insn = memory_state.insn;
+  cycle_status_e m_cycle_status;
+  assign m_cycle_status = memory_state.cycle_status;
 
   // register signals
-  logic [4:0] m_insn_rd = memory_state.insn_rd;
-  logic [31:0] m_rd_data = memory_state.rd_data;
-  logic m_we = memory_state.we;
+  logic [4:0] m_insn_rd;
+  assign m_insn_rd = memory_state.insn_rd;
+  logic [31:0] m_rd_data;
+  assign m_rd_data = memory_state.rd_data;
+  logic m_we;
+  assign m_we = memory_state.we;
 
   // memory signals
-  logic [`REG_SIZE] m_addr_to_dmem = memory_state.addr_to_dmem;
-  logic [`REG_SIZE] m_store_data_to_dmem = memory_state.store_data_to_dmem;
-  logic [3:0] m_store_we_to_dmem = memory_state.store_we_to_dmem;
+  logic [`REG_SIZE] m_addr_to_dmem;
+  assign m_addr_to_dmem = memory_state.addr_to_dmem;
+  logic [`REG_SIZE] m_store_data_to_dmem;
+  assign m_store_data_to_dmem = memory_state.store_data_to_dmem;
+  logic [3:0] m_store_we_to_dmem;
+  assign m_store_we_to_dmem = memory_state.store_we_to_dmem;
 
 
 
@@ -791,14 +1064,20 @@ module DatapathPipelined (
   end
 
   // WRITE SIGNALS
-  logic [`REG_SIZE] w_pc = write_state.pc;
-  logic [`INSN_SIZE] w_insn = write_state.insn;
-  cycle_status_e w_cycle_status = write_state.cycle_status;
+  logic [`REG_SIZE] w_pc;
+  assign w_pc = write_state.pc;
+  logic [`INSN_SIZE] w_insn;
+  assign w_insn = write_state.insn;
+  cycle_status_e w_cycle_status;
+  assign w_cycle_status = write_state.cycle_status;
 
   // register signals
-  logic [4:0] w_insn_rd = write_state.insn_rd;
-  logic [31:0] w_rd_data = write_state.rd_data;
-  logic w_we = write_state.we;
+  logic [4:0] w_insn_rd;
+  assign w_insn_rd = write_state.insn_rd;
+  logic [31:0] w_rd_data;
+  assign w_rd_data = write_state.rd_data;
+  logic w_we;
+  assign w_we = write_state.we;
 
 
 
