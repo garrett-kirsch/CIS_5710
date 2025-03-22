@@ -311,26 +311,26 @@ module DatapathPipelined (
 
   // division vars
 
-  wire [31:0] signed_quotient;
-  wire [31:0] signed_remainder;
+  // wire [31:0] signed_quotient;
+  // wire [31:0] signed_remainder;
   
-  wire [31:0] unsigned_divisor;
-  wire [31:0] unsigned_dividend;
-  wire [31:0] unsigned_quotient;
-  wire [31:0] unsigned_remainder;
+  // wire [31:0] unsigned_divisor;
+  // wire [31:0] unsigned_dividend;
+  // wire [31:0] unsigned_quotient;
+  // wire [31:0] unsigned_remainder;
 
-  // convert dividend and divisor to unsigned
-  assign unsigned_dividend = execute_state.rs1_data[31] ? (~execute_state.rs1_data + 1) : execute_state.rs1_data;
-  assign unsigned_divisor = execute_state.rs2_data[31] ? (~execute_state.rs2_data + 1) : execute_state.rs2_data;
+  // // convert dividend and divisor to unsigned
+  // assign unsigned_dividend = execute_state.rs1_data[31] ? (~execute_state.rs1_data + 1) : execute_state.rs1_data;
+  // assign unsigned_divisor = execute_state.rs2_data[31] ? (~execute_state.rs2_data + 1) : execute_state.rs2_data;
 
-  // convert outputs from unsigned division to be signed
-  assign signed_quotient = (execute_state.rs1_data[31] ^ execute_state.rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
-  assign signed_remainder = (execute_state.rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
+  // // convert outputs from unsigned division to be signed
+  // assign signed_quotient = (execute_state.rs1_data[31] ^ execute_state.rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
+  // assign signed_remainder = (execute_state.rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
 
-  // need to wait 8 cycles to run
-  DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
-          .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
-          .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
+  // // need to wait 8 cycles to run
+  // DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
+  //         .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
+  //         .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
 
 
 
@@ -352,7 +352,7 @@ module DatapathPipelined (
   /***************/
 
   logic [`REG_SIZE] f_pc_current;
-  wire [`INSN_SIZE] f_insn;
+  logic [`INSN_SIZE] f_insn;
   cycle_status_e f_cycle_status;
 
   // program counter
@@ -361,9 +361,10 @@ module DatapathPipelined (
       f_pc_current <= 32'd0;
       // NB: use CYCLE_NO_STALL since this is the value that will persist after the last reset cycle
       f_cycle_status <= CYCLE_NO_STALL;
-    end else if (memory_state.branch_taken) begin
+    end else if (x_branch_taken) begin
       // BRANCH TO NEW PC
-      f_pc_current <= memory_state.branched_pc;
+      f_pc_current <= x_branched_pc;
+      f_cycle_status <= CYCLE_NO_STALL;
     end else begin
       f_cycle_status <= CYCLE_NO_STALL;
       f_pc_current <= f_pc_current + 4;
@@ -372,6 +373,7 @@ module DatapathPipelined (
   // send PC to imem
   assign pc_to_imem = f_pc_current;
   assign f_insn = insn_from_imem;
+  
 
   // Here's how to disassemble an insn into a string you can view in GtkWave.
   // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
@@ -401,7 +403,7 @@ module DatapathPipelined (
       decode_state <= '{
         pc: 0,
         insn: 0,
-        cycle_status: f_cycle_status
+        cycle_status: CYCLE_TAKEN_BRANCH
       };
     end else begin
         decode_state <= '{
@@ -628,7 +630,7 @@ module DatapathPipelined (
       execute_state <= '{
         pc: 0,
         insn: 0,
-        cycle_status: d_cycle_status,
+        cycle_status: CYCLE_TAKEN_BRANCH,
         opcode: 0,
           
         insn_rd: 0,
@@ -671,6 +673,7 @@ module DatapathPipelined (
   assign x_insn = execute_state.insn;
   cycle_status_e x_cycle_status;
   assign x_cycle_status = execute_state.cycle_status;
+  
 
   logic [`OPCODE_SIZE] x_opcode;
   assign x_opcode = execute_state.opcode;
@@ -752,6 +755,16 @@ module DatapathPipelined (
 
   end
 
+  // halt signal
+  logic x_halt;
+
+  // always_comb begin
+  //   x_cycle_status = execute_state.cycle_status;
+  //   if (x_branch_taken) begin
+  //     x_cycle_status = CYCLE_TAKEN_BRANCH;
+  //   end
+  // end
+
   always_comb begin
     // register signals
     x_we = 0;
@@ -766,8 +779,11 @@ module DatapathPipelined (
     multiple = 0;
 
     // branch signals
-    x_branched_pc = 0; 
+    x_branched_pc = x_pc; 
     x_branch_taken = 0;
+
+    // halt signal
+    x_halt = 0;
 
     case (x_opcode)
       OpLui: begin
@@ -935,6 +951,16 @@ module DatapathPipelined (
         
       end
 
+      OpEnviron: begin
+        // ecall > halt program, transfer control to OS (we don't have to do for now)
+        x_halt = 1;
+        
+      end
+
+      OpMiscMem: begin
+        // fence > do nothing but increment PC
+
+      end
 
       default: begin
         //illegal_insn = 1'b1;
@@ -992,7 +1018,7 @@ module DatapathPipelined (
           branched_pc: x_branched_pc, // represents the pc value that will be branched to IF there is a branch
           branch_taken: x_branch_taken, // 1: branch, 0: no branch
 
-          halt: 0
+          halt: x_halt
 
         };
     end
@@ -1023,7 +1049,8 @@ module DatapathPipelined (
   logic [3:0] m_store_we_to_dmem;
   assign m_store_we_to_dmem = memory_state.store_we_to_dmem;
 
-
+  logic m_halt;
+  assign m_halt = memory_state.halt;
 
 
   /****************/
@@ -1057,7 +1084,7 @@ module DatapathPipelined (
         rd_data: m_rd_data,
         we: m_we,
 
-        halt: 0
+        halt: m_halt
 
       };
     end
@@ -1078,6 +1105,17 @@ module DatapathPipelined (
   assign w_rd_data = write_state.rd_data;
   logic w_we;
   assign w_we = write_state.we;
+
+  // halt
+  logic w_halt;
+  assign w_halt = write_state.halt;
+
+  assign halt = w_halt;
+
+  // set trace signals
+  assign trace_writeback_pc = w_pc;
+  assign trace_writeback_insn = w_insn;
+  assign trace_writeback_cycle_status = w_cycle_status;
 
 
 
