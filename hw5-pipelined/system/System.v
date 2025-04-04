@@ -184,6 +184,141 @@ module cla (
 	assign c[24] = cout3;
 	assign sum = (a ^ b) ^ c;
 endmodule
+module DividerUnsignedPipelined (
+	clk,
+	rst,
+	stall,
+	i_dividend,
+	i_divisor,
+	o_remainder,
+	o_quotient
+);
+	input wire clk;
+	input wire rst;
+	input wire stall;
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	reg [223:0] stored_dividend;
+	reg [223:0] stored_remainder;
+	reg [223:0] stored_quotient;
+	reg [31:0] stored_divisor [0:6];
+	wire [31:0] dividend [0:31];
+	wire [31:0] remainder [0:31];
+	wire [31:0] quotient [0:31];
+	always @(posedge clk)
+		if (rst) begin
+			stored_dividend <= {7 {32'b00000000000000000000000000000000}};
+			stored_quotient <= {7 {32'b00000000000000000000000000000000}};
+			stored_remainder <= {7 {32'b00000000000000000000000000000000}};
+		end
+		else begin
+			stored_dividend[192+:32] <= dividend[3];
+			stored_quotient[192+:32] <= quotient[3];
+			stored_remainder[192+:32] <= remainder[3];
+			stored_dividend[160+:32] <= dividend[7];
+			stored_quotient[160+:32] <= quotient[7];
+			stored_remainder[160+:32] <= remainder[7];
+			stored_dividend[128+:32] <= dividend[11];
+			stored_quotient[128+:32] <= quotient[11];
+			stored_remainder[128+:32] <= remainder[11];
+			stored_dividend[96+:32] <= dividend[15];
+			stored_quotient[96+:32] <= quotient[15];
+			stored_remainder[96+:32] <= remainder[15];
+			stored_dividend[64+:32] <= dividend[19];
+			stored_quotient[64+:32] <= quotient[19];
+			stored_remainder[64+:32] <= remainder[19];
+			stored_dividend[32+:32] <= dividend[23];
+			stored_quotient[32+:32] <= quotient[23];
+			stored_remainder[32+:32] <= remainder[23];
+			stored_dividend[0+:32] <= dividend[27];
+			stored_quotient[0+:32] <= quotient[27];
+			stored_remainder[0+:32] <= remainder[27];
+			stored_divisor[0] <= i_divisor;
+			stored_divisor[1] <= stored_divisor[0];
+			stored_divisor[2] <= stored_divisor[1];
+			stored_divisor[3] <= stored_divisor[2];
+			stored_divisor[4] <= stored_divisor[3];
+			stored_divisor[5] <= stored_divisor[4];
+			stored_divisor[6] <= stored_divisor[5];
+		end
+	divu_1iter d1(
+		.i_dividend(i_dividend),
+		.i_divisor(i_divisor),
+		.i_remainder(0),
+		.i_quotient(0),
+		.o_dividend(dividend[0]),
+		.o_remainder(remainder[0]),
+		.o_quotient(quotient[0])
+	);
+	genvar _gv_k_1;
+	generate
+		for (_gv_k_1 = 0; _gv_k_1 < 3; _gv_k_1 = _gv_k_1 + 1) begin : genblk1
+			localparam k = _gv_k_1;
+			divu_1iter d2(
+				.i_dividend(dividend[k]),
+				.i_divisor(i_divisor),
+				.i_remainder(remainder[k]),
+				.i_quotient(quotient[k]),
+				.o_dividend(dividend[k + 1]),
+				.o_remainder(remainder[k + 1]),
+				.o_quotient(quotient[k + 1])
+			);
+		end
+	endgenerate
+	genvar _gv_j_1;
+	generate
+		for (_gv_j_1 = 0; _gv_j_1 < 7; _gv_j_1 = _gv_j_1 + 1) begin : genblk2
+			localparam j = _gv_j_1;
+			divu_1iter d3(
+				.i_dividend(stored_dividend[(6 - j) * 32+:32]),
+				.i_divisor(stored_divisor[j]),
+				.i_remainder(stored_remainder[(6 - j) * 32+:32]),
+				.i_quotient(stored_quotient[(6 - j) * 32+:32]),
+				.o_dividend(dividend[4 * (j + 1)]),
+				.o_remainder(remainder[4 * (j + 1)]),
+				.o_quotient(quotient[4 * (j + 1)])
+			);
+			genvar _gv_i_2;
+			for (_gv_i_2 = 4 * (j + 1); _gv_i_2 < ((4 * (j + 1)) + 3); _gv_i_2 = _gv_i_2 + 1) begin : genblk1
+				localparam i = _gv_i_2;
+				divu_1iter d4(
+					.i_dividend(dividend[i]),
+					.i_divisor(stored_divisor[j]),
+					.i_remainder(remainder[i]),
+					.i_quotient(quotient[i]),
+					.o_dividend(dividend[i + 1]),
+					.o_remainder(remainder[i + 1]),
+					.o_quotient(quotient[i + 1])
+				);
+			end
+		end
+	endgenerate
+	assign o_quotient = quotient[31];
+	assign o_remainder = remainder[31];
+endmodule
+module divu_1iter (
+	i_dividend,
+	i_divisor,
+	i_remainder,
+	i_quotient,
+	o_dividend,
+	o_remainder,
+	o_quotient
+);
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	input wire [31:0] i_remainder;
+	input wire [31:0] i_quotient;
+	output wire [31:0] o_dividend;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	wire [31:0] temp_rem = (i_remainder << 1) | (i_dividend >> 31);
+	assign o_dividend = i_dividend << 1;
+	assign o_quotient = (temp_rem < i_divisor ? i_quotient << 1 : (i_quotient << 1) | 1);
+	assign o_remainder = (temp_rem < i_divisor ? temp_rem : temp_rem - i_divisor);
+endmodule
 module Disasm (
 	insn,
 	disasm
@@ -288,7 +423,9 @@ module DatapathPipelined (
 	reg [31:0] x_rs1_data;
 	assign cla_a = x_rs1_data;
 	wire [31:0] x_imm_i_sext;
+	wire [31:0] x_imm_s_sext;
 	wire [46:0] x_insn_key;
+	wire [6:0] x_opcode;
 	reg [31:0] x_rs2_data;
 	always @(*) begin
 		if (_sv2v_0)
@@ -299,8 +436,10 @@ module DatapathPipelined (
 			cla_b = ~x_rs2_data;
 			cla_cin = 1;
 		end
-		else if (x_insn_key[28])
+		else if (x_insn_key[28] || (x_opcode == OpLoad))
 			cla_b = x_imm_i_sext;
+		else if (x_opcode == OpStore)
+			cla_b = x_imm_s_sext;
 	end
 	cla adder(
 		.a(cla_a),
@@ -310,6 +449,26 @@ module DatapathPipelined (
 	);
 	reg [63:0] multiple;
 	wire [31:0] product_temp;
+	wire [31:0] signed_quotient;
+	wire [31:0] signed_remainder;
+	wire [31:0] unsigned_divisor;
+	wire [31:0] unsigned_dividend;
+	wire [31:0] unsigned_quotient;
+	wire [31:0] unsigned_remainder;
+	reg [435:0] execute_state;
+	assign unsigned_dividend = (execute_state[121] ? ~execute_state[121-:32] + 1 : execute_state[121-:32]);
+	assign unsigned_divisor = (execute_state[89] ? ~execute_state[89-:32] + 1 : execute_state[89-:32]);
+	assign signed_quotient = (execute_state[121] ^ execute_state[89] ? ~unsigned_quotient + 1 : unsigned_quotient);
+	assign signed_remainder = (execute_state[121] ? ~unsigned_remainder + 1 : unsigned_remainder);
+	DividerUnsignedPipelined divider(
+		.clk(clk),
+		.rst(rst),
+		.stall(0),
+		.i_dividend(unsigned_dividend),
+		.i_divisor(unsigned_divisor),
+		.o_quotient(unsigned_quotient),
+		.o_remainder(unsigned_remainder)
+	);
 	reg [31:0] cycles_current;
 	always @(posedge clk)
 		if (rst)
@@ -319,6 +478,7 @@ module DatapathPipelined (
 	reg [31:0] f_pc_current;
 	wire [31:0] f_insn;
 	reg [31:0] f_cycle_status;
+	reg data_dependent_load;
 	reg x_branch_taken;
 	reg [31:0] x_branched_pc;
 	always @(posedge clk)
@@ -328,6 +488,10 @@ module DatapathPipelined (
 		end
 		else if (x_branch_taken) begin
 			f_pc_current <= x_branched_pc;
+			f_cycle_status <= 32'd2;
+		end
+		else if (data_dependent_load) begin
+			f_pc_current <= f_pc_current;
 			f_cycle_status <= 32'd2;
 		end
 		else begin
@@ -341,22 +505,41 @@ module DatapathPipelined (
 		.insn(f_insn),
 		.disasm(f_disasm)
 	);
+	wire [255:0] d_disasm;
 	reg [95:0] decode_state;
+	Disasm #(.PREFIX("D")) disasm_1decode(
+		.insn(decode_state[63-:32]),
+		.disasm(d_disasm)
+	);
+	wire [255:0] x_disasm;
+	Disasm #(.PREFIX("X")) disasm_2execute(
+		.insn(execute_state[403-:32]),
+		.disasm(x_disasm)
+	);
+	wire [255:0] m_disasm;
+	reg [326:0] memory_state;
+	Disasm #(.PREFIX("M")) disasm_3memory(
+		.insn(memory_state[294-:32]),
+		.disasm(m_disasm)
+	);
+	wire [255:0] w_disasm;
+	reg [141:0] write_state;
+	Disasm #(.PREFIX("W")) disasm_4write(
+		.insn(write_state[109-:32]),
+		.disasm(w_disasm)
+	);
+	wire [31:0] d_cycle_status;
+	wire [31:0] d_insn;
+	wire [31:0] d_pc_current;
 	always @(posedge clk)
 		if (rst)
 			decode_state <= 96'h000000000000000000000001;
 		else if (x_branch_taken)
 			decode_state <= 96'h000000000000000000000004;
+		else if (data_dependent_load)
+			decode_state <= {d_pc_current, d_insn, d_cycle_status};
 		else
 			decode_state <= {f_pc_current, f_insn, f_cycle_status};
-	wire [255:0] d_disasm;
-	Disasm #(.PREFIX("D")) disasm_1decode(
-		.insn(decode_state[63-:32]),
-		.disasm(d_disasm)
-	);
-	wire [31:0] d_pc_current;
-	wire [31:0] d_insn;
-	wire [31:0] d_cycle_status;
 	assign d_pc_current = decode_state[95-:32];
 	assign d_insn = decode_state[63-:32];
 	assign d_cycle_status = decode_state[31-:32];
@@ -390,19 +573,19 @@ module DatapathPipelined (
 	assign d_imm_u = d_insn[31:12];
 	reg [31:0] d_rs1_data;
 	reg [31:0] d_rs2_data;
-	wire [4:0] w_insn_rd_bypass;
-	wire [6:0] w_opcode;
-	assign w_insn_rd_bypass = (w_opcode == OpBranch ? 0 : w_insn_rd);
 	always @(*) begin
 		if (_sv2v_0)
 			;
 		d_rs1_data = d_rs1_data_temp;
 		d_rs2_data = d_rs2_data_temp;
-		if ((w_insn_rd_bypass == d_insn_rs1) && (d_insn_rs1 != 0))
+		if ((w_insn_rd == d_insn_rs1) && (d_insn_rs1 != 0))
 			d_rs1_data = w_rd_data;
-		if ((w_insn_rd_bypass == d_insn_rs2) && (d_insn_rs2 != 0))
+		if ((w_insn_rd == d_insn_rs2) && (d_insn_rs2 != 0))
 			d_rs2_data = w_rd_data;
 	end
+	wire load_data_dependency_stall;
+	wire [4:0] x_insn_rd;
+	assign load_data_dependency_stall = (x_opcode == OpLoad) && ((x_insn_rd == d_insn_rs1) || (x_insn_rd == d_insn_rs2));
 	wire [46:0] d_insn_key;
 	assign d_insn_key[46] = d_insn_opcode == OpLui;
 	assign d_insn_key[45] = d_insn_opcode == OpAuipc;
@@ -453,12 +636,19 @@ module DatapathPipelined (
 	assign d_insn_key[0] = d_insn_opcode == OpMiscMem;
 	wire [435:0] normal_execute_state;
 	assign normal_execute_state = {d_pc_current, d_insn, d_cycle_status, d_insn_opcode, d_insn_rd, d_imm_i, d_imm_s, d_imm_b, d_imm_j, d_imm_i_sext, d_imm_s_sext, d_imm_b_sext, d_imm_j_sext, d_imm_u, d_rs1_data, d_rs2_data, d_insn_rs1, d_insn_rs2, d_insn_key, 1'd0};
-	reg [435:0] execute_state;
 	always @(posedge clk)
-		if (rst)
-			execute_state <= 436'h10000000000000000000000000000000000000000000000000000000000000000000000000000000000000;
-		else if (x_branch_taken)
-			execute_state <= 436'h40000000000000000000000000000000000000000000000000000000000000000000000000000000000000;
+		if (rst) begin
+			execute_state <= 0;
+			execute_state[371-:32] <= 32'd1;
+		end
+		else if (x_branch_taken) begin
+			execute_state <= 0;
+			execute_state[371-:32] <= 32'd4;
+		end
+		else if (data_dependent_load) begin
+			execute_state <= 0;
+			execute_state[371-:32] <= 32'd16;
+		end
 		else
 			execute_state <= normal_execute_state;
 	reg x_we;
@@ -469,9 +659,7 @@ module DatapathPipelined (
 	assign x_insn = execute_state[403-:32];
 	wire [31:0] x_cycle_status;
 	assign x_cycle_status = execute_state[371-:32];
-	wire [6:0] x_opcode;
 	assign x_opcode = execute_state[339-:7];
-	wire [4:0] x_insn_rd;
 	assign x_insn_rd = execute_state[332-:5];
 	wire [11:0] x_imm_i;
 	assign x_imm_i = execute_state[327-:12];
@@ -482,7 +670,6 @@ module DatapathPipelined (
 	wire [20:0] x_imm_j;
 	assign x_imm_j = execute_state[290-:21];
 	assign x_imm_i_sext = execute_state[269-:32];
-	wire [31:0] x_imm_s_sext;
 	assign x_imm_s_sext = execute_state[237-:32];
 	wire [31:0] x_imm_b_sext;
 	assign x_imm_b_sext = execute_state[205-:32];
@@ -502,8 +689,9 @@ module DatapathPipelined (
 	reg [31:0] x_addr_to_dmem;
 	reg [31:0] x_store_mem_to_dmem;
 	reg [3:0] x_store_we_to_dmem;
+	reg [1:0] x_mem_bytes;
 	wire [4:0] m_insn_rd;
-	wire [31:0] m_rd_data;
+	reg [31:0] m_rd_data;
 	always @(*) begin
 		if (_sv2v_0)
 			;
@@ -512,17 +700,28 @@ module DatapathPipelined (
 		if (x_insn_rs1 != 0) begin
 			if (m_insn_rd == x_insn_rs1)
 				x_rs1_data = m_rd_data;
-			else if (w_insn_rd_bypass == x_insn_rs1)
+			else if (w_insn_rd == x_insn_rs1)
 				x_rs1_data = w_rd_data;
 		end
 		if (x_insn_rs2 != 0) begin
 			if (m_insn_rd == x_insn_rs2)
 				x_rs2_data = m_rd_data;
-			else if (w_insn_rd_bypass == x_insn_rs2)
+			else if (w_insn_rd == x_insn_rs2)
 				x_rs2_data = w_rd_data;
 		end
 	end
 	reg x_halt;
+	always @(*) begin
+		if (_sv2v_0)
+			;
+		data_dependent_load = 0;
+		if (x_opcode == OpLoad) begin
+			if ((d_insn_opcode == OpStore) || (d_insn_opcode == OpRegImm))
+				data_dependent_load = x_insn_rd == d_insn_rs1;
+			else if (((d_insn_opcode != OpLui) && (d_insn_opcode != OpJal)) && (d_insn_opcode != OpJalr))
+				data_dependent_load = (x_insn_rd == d_insn_rs1) || (x_insn_rd == d_insn_rs2);
+		end
+	end
 	always @(*) begin
 		if (_sv2v_0)
 			;
@@ -531,6 +730,7 @@ module DatapathPipelined (
 		x_addr_to_dmem = 0;
 		x_store_mem_to_dmem = 0;
 		x_store_we_to_dmem = 0;
+		x_mem_bytes = 0;
 		multiple = 0;
 		x_branched_pc = x_pc;
 		x_branch_taken = 0;
@@ -600,6 +800,26 @@ module DatapathPipelined (
 					x_insn_key[37]: x_branch_taken = $signed(x_rs1_data) >= $unsigned(x_rs2_data);
 				endcase
 			end
+			OpLoad: begin
+				x_we = 1;
+				x_addr_to_dmem = cla_sum;
+			end
+			OpStore: begin
+				x_addr_to_dmem = cla_sum;
+				x_store_mem_to_dmem = x_rs2_data;
+			end
+			OpJalr: begin
+				x_we = 1;
+				x_rd_data = x_pc + 4;
+				x_branch_taken = 1;
+				x_branched_pc = (x_rs1_data + x_imm_i_sext) & ~32'd1;
+			end
+			OpJal: begin
+				x_we = 1;
+				x_rd_data = x_pc + 4;
+				x_branch_taken = 1;
+				x_branched_pc = x_pc + x_imm_j_sext;
+			end
 			OpEnviron: x_halt = 1;
 			OpMiscMem:
 				;
@@ -607,36 +827,111 @@ module DatapathPipelined (
 				;
 		endcase
 	end
-	reg [242:0] memory_state;
 	always @(posedge clk)
-		if (rst)
-			memory_state <= 243'h0000000000000000000000008000000000000000000000000000000000000;
+		if (rst) begin
+			memory_state <= 0;
+			memory_state[262-:32] <= 32'd1;
+		end
 		else
-			memory_state <= {x_pc, x_insn, x_cycle_status, x_opcode, x_insn_rd, x_rd_data, x_we, x_addr_to_dmem, x_store_mem_to_dmem, x_store_we_to_dmem, x_branched_pc, x_branch_taken, x_halt};
+			memory_state <= {x_pc, x_insn, x_cycle_status, x_opcode, x_insn_rd, x_rd_data, x_we, x_addr_to_dmem, x_store_mem_to_dmem, x_store_we_to_dmem, x_rs2_data, x_insn_rs2, x_branched_pc, x_branch_taken, x_insn_key, x_halt};
 	wire [31:0] m_pc;
-	assign m_pc = memory_state[242-:32];
+	assign m_pc = memory_state[326-:32];
 	wire [31:0] m_insn;
-	assign m_insn = memory_state[210-:32];
+	assign m_insn = memory_state[294-:32];
 	wire [31:0] m_cycle_status;
-	assign m_cycle_status = memory_state[178-:32];
+	assign m_cycle_status = memory_state[262-:32];
 	wire [6:0] m_opcode;
-	assign m_opcode = memory_state[146-:7];
-	assign m_insn_rd = memory_state[139-:5];
-	assign m_rd_data = memory_state[134-:32];
+	assign m_opcode = memory_state[230-:7];
+	assign m_insn_rd = memory_state[223-:5];
+	wire [31:0] m_rd_data_temp;
+	assign m_rd_data_temp = memory_state[218-:32];
 	wire m_we;
-	assign m_we = memory_state[102];
+	assign m_we = memory_state[186];
 	wire [31:0] m_addr_to_dmem;
-	assign m_addr_to_dmem = memory_state[101-:32];
-	wire [31:0] m_store_data_to_dmem;
-	assign m_store_data_to_dmem = memory_state[69-:32];
-	wire [3:0] m_store_we_to_dmem;
-	assign m_store_we_to_dmem = memory_state[37-:4];
+	assign m_addr_to_dmem = memory_state[185-:32];
+	reg [31:0] m_store_data_to_dmem;
+	reg [31:0] m_rs2_data;
+	wire [31:0] m_rs2_data_temp;
+	assign m_rs2_data_temp = memory_state[117-:32];
+	wire [4:0] m_insn_rs2;
+	assign m_insn_rs2 = memory_state[85-:5];
+	reg [3:0] m_store_we_to_dmem;
+	wire [1:0] m_mem_bytes;
+	assign m_mem_bytes = m_addr_to_dmem[1:0];
+	wire [46:0] m_insn_key;
+	assign m_insn_key = memory_state[47-:47];
 	wire m_halt;
 	assign m_halt = memory_state[0];
-	reg [141:0] write_state;
+	assign addr_to_dmem = m_addr_to_dmem & 32'hfffffffc;
+	assign store_data_to_dmem = m_store_data_to_dmem;
+	assign store_we_to_dmem = m_store_we_to_dmem;
+	wire w_insn_load;
+	always @(*) begin
+		if (_sv2v_0)
+			;
+		m_rs2_data = m_rs2_data_temp;
+		if (((w_insn_load && (w_insn_rd == m_insn_rs2)) && (m_opcode == OpStore)) && (w_insn_rd != 0))
+			m_rs2_data = w_rd_data;
+	end
+	always @(*) begin
+		if (_sv2v_0)
+			;
+		m_rd_data = m_rd_data_temp;
+		m_store_we_to_dmem = 0;
+		m_store_data_to_dmem = 0;
+		case (m_opcode)
+			OpLoad:
+				case (1)
+					m_insn_key[36]:
+						case (m_mem_bytes)
+							0: m_rd_data = {{24 {load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+							1: m_rd_data = {{24 {load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+							2: m_rd_data = {{24 {load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+							3: m_rd_data = {{24 {load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+						endcase
+					m_insn_key[35]:
+						if (m_mem_bytes[1])
+							m_rd_data = {{16 {load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
+						else
+							m_rd_data = {{16 {load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
+					m_insn_key[34]: m_rd_data = load_data_from_dmem;
+					m_insn_key[33]:
+						case (m_mem_bytes)
+							0: m_rd_data = {{24 {1'b0}}, load_data_from_dmem[7:0]};
+							1: m_rd_data = {{24 {1'b0}}, load_data_from_dmem[15:8]};
+							2: m_rd_data = {{24 {1'b0}}, load_data_from_dmem[23:16]};
+							3: m_rd_data = {{24 {1'b0}}, load_data_from_dmem[31:24]};
+						endcase
+					m_insn_key[32]:
+						if (m_mem_bytes[1])
+							m_rd_data = {{16 {1'b0}}, load_data_from_dmem[31:16]};
+						else
+							m_rd_data = {{16 {1'b0}}, load_data_from_dmem[15:0]};
+				endcase
+			OpStore:
+				case (1)
+					m_insn_key[31]: begin
+						m_store_we_to_dmem = 4'b0001 << m_mem_bytes;
+						m_store_data_to_dmem = {24'd0, m_rs2_data[7:0]} << ({3'b000, m_mem_bytes} << 3);
+					end
+					m_insn_key[30]: begin
+						m_store_we_to_dmem = 4'b0011 << m_mem_bytes;
+						m_store_data_to_dmem = {16'd0, m_rs2_data[15:0]} << ({3'b000, m_mem_bytes} << 3);
+					end
+					m_insn_key[29]: begin
+						m_store_we_to_dmem = 4'b1111;
+						m_store_data_to_dmem = m_rs2_data;
+					end
+				endcase
+			default:
+				;
+		endcase
+	end
 	always @(posedge clk)
-		if (rst)
-			write_state <= 142'h000000000000000000000000400000000000;
+		if (rst) begin
+			write_state <= 0;
+			write_state[77-:32] <= 32'd1;
+		end
 		else
 			write_state <= {m_pc, m_insn, m_cycle_status, m_opcode, m_insn_rd, m_rd_data, m_we, m_halt};
 	wire [31:0] w_pc;
@@ -645,6 +940,8 @@ module DatapathPipelined (
 	assign w_insn = write_state[109-:32];
 	wire [31:0] w_cycle_status;
 	assign w_cycle_status = write_state[77-:32];
+	wire [6:0] w_opcode;
+	assign w_insn_load = w_opcode == OpLoad;
 	assign w_opcode = write_state[45-:7];
 	assign w_insn_rd = write_state[38-:5];
 	assign w_rd_data = write_state[33-:32];

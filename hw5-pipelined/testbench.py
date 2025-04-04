@@ -487,6 +487,11 @@ async def testTraceRvLw(dut):
     "Use the LW riscv-test with trace comparison"
     await riscvTest(dut, cu.RISCV_TESTS_PATH / 'rv32ui-p-lw', TRACING_MODE)
 
+@cocotb.test()  
+async def testOneRiscvTest(dut):
+    "Use this to run one particular riscv test"
+    await riscvTest(dut, cu.RISCV_TESTS_PATH / 'rv32ui-p-sh')
+
 # tracingMode argument is one of `generate`, `compare` or None
 async def riscvTest(dut, binaryPath=None, tracingMode=None):
     "Run the official RISC-V test whose binary lives at `binaryPath`"

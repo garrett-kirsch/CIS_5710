@@ -209,6 +209,9 @@ typedef struct packed {
   logic [`REG_SIZE] store_data_to_dmem;
   logic [3:0] store_we_to_dmem;
 
+  logic [`REG_SIZE] rs2_data;
+  logic [4:0] insn_rs2;
+
   // branch signal
   logic [`REG_SIZE] branched_pc; // represents the pc value that will be branched to IF there is a branch
   logic branch_taken; // 1: branch, 0: no branch
@@ -307,6 +310,8 @@ module DatapathPipelined (
     end else if (x_insn_key.insn_addi || x_opcode == OpLoad) begin
       // addi and load insns use rs1 + sext(imm12)
       cla_b = x_imm_i_sext;
+    end else if (x_opcode == OpStore) begin
+      cla_b = x_imm_s_sext;
     end
   end
 
@@ -485,7 +490,7 @@ module DatapathPipelined (
   // split R-type instruction - see section 2.2 of RiscV spec
   assign {d_insn_funct7, d_insn_rs2, d_insn_rs1, d_insn_funct3, d_insn_rd_temp, d_insn_opcode} = d_insn;
 
-  assign d_insn_rd = (d_insn_opcode == OpBranch) ? 0 : d_insn_rd_temp;
+  assign d_insn_rd = (d_insn_opcode == OpBranch || d_insn_opcode == OpStore) ? 0 : d_insn_rd_temp;
   
   // setup for I, S, B & J type instructions
   // I - short immediates and loads
@@ -494,7 +499,7 @@ module DatapathPipelined (
 
   // S - stores
   logic [11:0] d_imm_s;
-  assign d_imm_s[11:5] = d_insn_funct7, d_imm_s[4:0] = d_insn_rd;
+  assign d_imm_s[11:5] = d_insn_funct7, d_imm_s[4:0] = d_insn_rd_temp;
 
   // B - conditionals
   logic [12:0] d_imm_b;
@@ -540,8 +545,8 @@ module DatapathPipelined (
   end
 
   // LOAD DATA DEPENDENCY CHECK
-  logic load_data_dependency_stall; // if 1, stall for one cycle
-  assign load_data_dependency_stall = x_opcode == OpLoad && (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2);
+  // logic load_data_dependency_stall; // if 1, stall for one cycle
+  // assign load_data_dependency_stall = x_opcode == OpLoad && (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2);
 
   
   insn_key d_insn_key;
@@ -762,7 +767,19 @@ module DatapathPipelined (
   // end
 
   // determine data-dependent load -> if insn in execute is load && rd is a operator for the previous insn
-  logic data_dependent_load = x_opcode == OpLoad && (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2);
+  logic data_dependent_load; // = x_opcode == OpLoad && (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2);
+  always_comb begin
+    data_dependent_load = 0;
+    if (x_opcode == OpLoad) begin
+      if (d_insn_opcode == OpStore || d_insn_opcode == OpRegImm) begin
+        // if store or imm insn, only stall if x_insn_rd == d_insn_rs1
+        data_dependent_load = x_insn_rd == d_insn_rs1;
+      end else if (d_insn_opcode != OpLui && d_insn_opcode != OpJal 
+          && d_insn_opcode != OpJalr) begin
+        data_dependent_load = x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2;
+      end
+    end
+  end
 
   always_comb begin
     // register signals
@@ -961,7 +978,7 @@ module DatapathPipelined (
 
       OpStore: begin
         x_addr_to_dmem = cla_sum;
-        x_store_mem_to_dmem = x_rs2_data;
+        //x_store_mem_to_dmem = x_rs2_data;
       end
 
       OpJalr: begin
@@ -1028,7 +1045,8 @@ module DatapathPipelined (
           store_data_to_dmem: x_store_mem_to_dmem,
           store_we_to_dmem: x_store_we_to_dmem,
 
-          
+          rs2_data: x_rs2_data,
+          insn_rs2: x_insn_rs2,
 
           // branch signals
           branched_pc: x_branched_pc, // represents the pc value that will be branched to IF there is a branch
@@ -1071,14 +1089,20 @@ module DatapathPipelined (
 
   // memory signals
   logic [`REG_SIZE] m_addr_to_dmem;
+  assign m_addr_to_dmem = memory_state.addr_to_dmem;
 
-  logic [`REG_SIZE] m_addr_to_dmem_temp;
-  assign m_addr_to_dmem_temp = memory_state.addr_to_dmem;
+  // logic [`REG_SIZE] m_addr_to_dmem_temp;
+  // assign m_addr_to_dmem_temp = memory_state.addr_to_dmem;
 
   logic [`REG_SIZE] m_store_data_to_dmem;
 
+  // DATA TO STORE IN MEMORY
   logic [`REG_SIZE] m_rs2_data;
-  assign m_rs2_data = memory_state.store_data_to_dmem;
+  logic [`REG_SIZE] m_rs2_data_temp;
+  assign m_rs2_data_temp = memory_state.rs2_data;
+
+  logic [4:0] m_insn_rs2;
+  assign m_insn_rs2 = memory_state.insn_rs2;
 
   logic [3:0] m_store_we_to_dmem;
   
@@ -1098,13 +1122,21 @@ module DatapathPipelined (
   assign store_we_to_dmem = m_store_we_to_dmem;
 
   // determine addr_to_dmem -> WM BYPASS
+  // always_comb begin
+  //   m_addr_to_dmem = m_addr_to_dmem_temp;
+  //   if (w_insn_load && w_insn_rd == m_insn_rs2 && m_opcode == OpStore && w_insn_rd != 0) begin
+  //     m_addr_to_dmem = w_rd_data;
+  //   end
+  // end
   always_comb begin
-    m_addr_to_dmem = m_addr_to_dmem_temp;
-    if (w_insn_load && w_insn_rd == m_insn_rd && m_opcode == OpStore && w_insn_rd != 0) begin
-      m_addr_to_dmem = w_rd_data;
+    m_rs2_data = m_rs2_data_temp; // Default to the value from the memory stage
+    if (m_opcode == OpStore && m_insn_rs2 != 0) begin
+      // Check if the value needs to be bypassed from the write-back stage
+      if (w_insn_load && w_insn_rd == m_insn_rs2) begin
+        m_rs2_data = w_rd_data;
+      end
     end
   end
-
 
   // loaded data should be inputed into the processor at the negedge of CLK
   always_comb begin
