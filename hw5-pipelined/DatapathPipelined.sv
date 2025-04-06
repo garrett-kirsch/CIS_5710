@@ -332,20 +332,265 @@ module DatapathPipelined (
   wire [31:0] unsigned_remainder;
 
   // convert dividend and divisor to unsigned
-  assign unsigned_dividend = execute_state.rs1_data[31] ? (~execute_state.rs1_data + 1) : execute_state.rs1_data;
-  assign unsigned_divisor = execute_state.rs2_data[31] ? (~execute_state.rs2_data + 1) : execute_state.rs2_data;
+  assign unsigned_dividend = x_rs1_data[31] ? (~x_rs1_data + 1) : x_rs1_data;
+  assign unsigned_divisor = x_rs2_data[31] ? (~x_rs2_data + 1) : x_rs2_data;
+
+  logic [31:0] dividend;
+  logic [31:0] divisor;
+  always_comb begin
+    dividend = x_rs1_data;
+    divisor = x_rs2_data;
+    if (x_insn_key.insn_div || x_insn_key.insn_rem) begin
+      dividend = unsigned_dividend;
+      divisor = unsigned_divisor;
+    end
+  end
 
   // convert outputs from unsigned division to be signed
-  assign signed_quotient = (execute_state.rs1_data[31] ^ execute_state.rs2_data[31]) ? (~unsigned_quotient + 1) : unsigned_quotient;
-  assign signed_remainder = (execute_state.rs1_data[31]) ? (~unsigned_remainder + 1) : unsigned_remainder;
+  assign signed_quotient = (div_sign_7) ? (~unsigned_quotient + 1) : unsigned_quotient;
+  assign signed_remainder = (dividend_sign_7) ? (~unsigned_remainder + 1) : unsigned_remainder;
 
   // need to wait 8 cycles to run
   DividerUnsignedPipelined divider(.clk(clk), .rst(rst), .stall(0), 
-          .i_dividend(unsigned_dividend), .i_divisor(unsigned_divisor), 
+          .i_dividend(dividend), .i_divisor(divisor), 
           .o_quotient(unsigned_quotient), .o_remainder(unsigned_remainder));
 
+  // DIVIDER CONTROL SIGNALS
+
+  // number of cycles the latest div has been executing
+  logic [2:0] div_count_latest;
+
+  // number of cycles the first div in a chain has been executing
+  logic [2:0] div_count_first;
+
+  // if div_count_latest < div_count_first && div_count_first == 7 => div_count_first <= 7
+  // Since there can't be any stalls in a chain of divides, we need to keep treating the divider output as 
+  // a real insn
+
+  // the divider output only gets passed onto the memory stage if div_count_first == 7
+  
+  // whether there is a divide insn in decode
+  logic d_div_insn;
+  assign d_div_insn = d_insn_key.insn_div || d_insn_key.insn_divu || d_insn_key.insn_rem || d_insn_key.insn_remu;
+
+  // whether there is a divide insn in execute
+  logic x_div_insn;
+  assign x_div_insn = x_insn_key.insn_div || x_insn_key.insn_divu || x_insn_key.insn_rem || x_insn_key.insn_remu;
+
+  // whether to stall for a divide insn
+  logic div_stall;
+
+  // INITIAL STALL if divide in execute && (no divide in decode || data dependent divide in decode)
+  // if there is a STALL, the values will be stay the same in execute stage, so data dependency will remain
+  assign div_stall = x_div_insn && (~d_div_insn || (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2)) && div_count_latest != 0;
+
+  // we should NOT stall when div_count_latest == 0, since that is when we are reading out our divider
+
+  always_ff @(posedge clk) begin
+    div_count_first <= 0;
+    div_count_latest <= 0;
+    if (rst) begin
+      div_count_first <= 0;
+      div_count_latest <= 0;
+    end else begin
+      
+      // div_count_first
+      if (div_count_latest > div_count_first && div_count_first == 0) begin
+        div_count_first <= 0;
+      end else if (d_div_insn || x_div_insn) begin
+        div_count_first <= div_count_first + 1;
+      end
+
+      // div_count_latest
+      if (div_stall) begin
+        div_count_latest <= div_count_latest + 1;
+      end else if (d_div_insn || x_div_insn) begin
+        // a new divide insn is being put into the divider
+        div_count_latest <= 1;
+      end
+    end
+  end
+
+  // Create 7 registers to hold important values through the divide datapath
+  logic div_by_zero_1;
+  logic div_sign_1;
+  logic dividend_sign_1;
+
+  logic [`REG_SIZE] div_pc_1; // probably unnecessary
+  logic [`REG_SIZE] div_insn_1; // probably unnecessary
+  logic [4:0] div_insn_rd_1; // NECESSARY
 
 
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_1 <= 0;
+      div_sign_1 <= 0;
+      dividend_sign_1 <= 0;
+      div_pc_1 <= 0;
+      div_insn_1 <= 0;
+      div_insn_rd_1 <= 0;
+    end else begin
+      div_by_zero_1 <= x_rs2_data == 0;
+      div_sign_1 <= x_rs1_data[31] ^ x_rs2_data[31];
+      dividend_sign_1 <= x_rs1_data[31];
+      div_pc_1 <= x_pc;
+      div_insn_1 <= x_insn;
+      div_insn_rd_1 <= x_insn_rd;
+    end
+  end
+
+  logic div_by_zero_2;
+  logic div_sign_2;
+  logic dividend_sign_2;
+
+  logic [`REG_SIZE] div_pc_2;
+  logic [`REG_SIZE] div_insn_2;
+  logic [4:0] div_insn_rd_2;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_2 <= 0;
+      div_sign_2 <= 0;
+      dividend_sign_2 <= 0;
+      div_pc_2 <= 0;
+      div_insn_2 <= 0;
+      div_insn_rd_2 <= 0;
+    end else begin
+      div_by_zero_2 <= div_by_zero_1;
+      div_sign_2 <= div_sign_1;
+      dividend_sign_2 <= dividend_sign_1;
+      div_pc_2 <= div_pc_1;
+      div_insn_2 <= div_insn_1;
+      div_insn_rd_2 <= div_insn_rd_1;
+    end
+  end
+
+  logic div_by_zero_3;
+  logic div_sign_3;
+  logic dividend_sign_3;
+  logic [`REG_SIZE] div_pc_3;
+  logic [`REG_SIZE] div_insn_3;
+  logic [4:0] div_insn_rd_3;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_3 <= 0;
+      div_sign_3 <= 0;
+      dividend_sign_3 <= 0;
+      div_pc_3 <= 0;
+      div_insn_3 <= 0;
+      div_insn_rd_3 <= 0;
+    end else begin
+      div_by_zero_3 <= div_by_zero_2;
+      div_sign_3 <= div_sign_2;
+      dividend_sign_3 <= dividend_sign_2;
+      div_pc_3 <= div_pc_2;
+      div_insn_3 <= div_insn_2;
+      div_insn_rd_3 <= div_insn_rd_2;
+    end
+  end
+
+  logic div_by_zero_4;
+  logic div_sign_4;
+  logic dividend_sign_4;
+  logic [`REG_SIZE] div_pc_4;
+  logic [`REG_SIZE] div_insn_4;
+  logic [4:0] div_insn_rd_4;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_4 <= 0;
+      div_sign_4 <= 0;
+      dividend_sign_4 <= 0;
+      div_pc_4 <= 0;
+      div_insn_4 <= 0;
+      div_insn_rd_4 <= 0;
+    end else begin
+      div_by_zero_4 <= div_by_zero_3;
+      div_sign_4 <= div_sign_3;
+      dividend_sign_4 <= dividend_sign_3;
+      div_pc_4 <= div_pc_3;
+      div_insn_4 <= div_insn_3;
+      div_insn_rd_4 <= div_insn_rd_3;
+    end
+  end
+
+  logic div_by_zero_5;
+  logic div_sign_5;
+  logic dividend_sign_5;
+  logic [`REG_SIZE] div_pc_5;
+  logic [`REG_SIZE] div_insn_5;
+  logic [4:0] div_insn_rd_5;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_5 <= 0;
+      div_sign_5 <= 0;
+      dividend_sign_5 <= 0;
+      div_pc_5 <= 0;
+      div_insn_5 <= 0;
+      div_insn_rd_5 <= 0;
+    end else begin
+      div_by_zero_5 <= div_by_zero_4;
+      div_sign_5 <= div_sign_4;
+      dividend_sign_5 <= dividend_sign_4;
+      div_pc_5 <= div_pc_4;
+      div_insn_5 <= div_insn_4;
+      div_insn_rd_5 <= div_insn_rd_4;
+    end
+  end
+
+  logic div_by_zero_6;
+  logic div_sign_6;
+  logic dividend_sign_6;
+  logic [`REG_SIZE] div_pc_6;
+  logic [`REG_SIZE] div_insn_6;
+  logic [4:0] div_insn_rd_6;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_6 <= 0;
+      div_sign_6 <= 0;
+      dividend_sign_6 <= 0;
+      div_pc_6 <= 0;
+      div_insn_6 <= 0;
+      div_insn_rd_6 <= 0;
+    end else begin
+      div_by_zero_6 <= div_by_zero_5;
+      div_sign_6 <= div_sign_5;
+      dividend_sign_6 <= dividend_sign_5;
+      div_pc_6 <= div_pc_5;
+      div_insn_6 <= div_insn_5;
+      div_insn_rd_6 <= div_insn_rd_5;
+    end
+  end
+
+  logic div_by_zero_7;
+  logic div_sign_7;
+  logic dividend_sign_7;
+  logic [`REG_SIZE] div_pc_7;
+  logic [`REG_SIZE] div_insn_7;
+  logic [4:0] div_insn_rd_7;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      div_by_zero_7 <= 0;
+      div_sign_7 <= 0;
+      dividend_sign_7 <= 0;
+      div_pc_7 <= 0;
+      div_insn_7 <= 0;
+      div_insn_rd_7 <= 0;
+    end else begin
+      div_by_zero_7 <= div_by_zero_6;
+      div_sign_7 <= div_sign_6;
+      dividend_sign_7 <= dividend_sign_6;
+      div_pc_7 <= div_pc_6;
+      div_insn_7 <= div_insn_6;
+      div_insn_rd_7 <= div_insn_rd_6;
+    end
+  end
+
+  
 
 
   // cycle counter, not really part of any stage but useful for orienting within GtkWave
@@ -377,7 +622,7 @@ module DatapathPipelined (
       // BRANCH TO NEW PC
       f_pc_current <= x_branched_pc;
       f_cycle_status <= CYCLE_NO_STALL;
-    end else if (data_dependent_load) begin
+    end else if (data_dependent_load || div_stall) begin
       // if data_dependent_load, we keep the insn in fetch
       f_pc_current <= f_pc_current;
       f_cycle_status <= CYCLE_NO_STALL;
@@ -449,7 +694,7 @@ module DatapathPipelined (
         insn: 0,
         cycle_status: CYCLE_TAKEN_BRANCH
       };
-    end else if (data_dependent_load) begin
+    end else if (data_dependent_load || div_stall) begin
       // STALL
       decode_state <= '{
         pc: d_pc_current,
@@ -658,6 +903,10 @@ module DatapathPipelined (
       // NOP
       execute_state <= 0;
       execute_state.cycle_status <= CYCLE_LOAD2USE;
+    end else if (div_stall) begin
+      execute_state <= execute_state;
+      execute_state.cycle_status <= CYCLE_DIV;
+    
     end else begin
       execute_state <= normal_execute_state;
     end
@@ -903,42 +1152,42 @@ module DatapathPipelined (
             x_rd_data = multiple[63:32];
           end
           // Divide
-          // x_insn_key.insn_div: begin
-          //   if (unsigned_divisor == 0) begin
-          //     // return -1 if dividing by zero
-          //     x_rd_data = 32'hFFFFFFFF; 
-          //   end else begin
-          //     x_rd_data = signed_quotient;
-          //   end
+          x_insn_key.insn_div: begin
+            if (div_by_zero_7) begin
+              // return -1 if dividing by zero
+              x_rd_data = 32'hFFFFFFFF; 
+            end else begin
+              x_rd_data = signed_quotient;
+            end
 
-          //   // check if divide is not finished yet
-          //   // if (divide_count != 3'b111) begin
-          //   //   pcNext = pcCurrent;
-          //   // end
-          // end
-          // x_insn_key.insn_divu: begin
-          //   x_rd_data = unsigned_quotient;
-          //   // check if divide is not finished yet
-          //   // if (divide_count != 3'b111) begin
-          //   //   pcNext = pcCurrent;
-          //   // end
-          // end
-          // // Modulus
-          // x_insn_key.insn_rem: begin
-          //   x_rd_data = signed_remainder;
-          //   // // check if divide is not finished yet
-          //   // if (divide_count != 3'b111) begin
-          //   //   pcNext = pcCurrent;            
-          //   // end
-          // end
-          // x_insn_key.insn_remu: begin
-          //   x_rd_data = unsigned_remainder;
-          //   // check if divide is not finished yet
-          //   // if (divide_count != 3'b111) begin
-          //   //   pcNext = pcCurrent;
+            // check if divide is not finished yet
+            // if (divide_count != 3'b111) begin
+            //   pcNext = pcCurrent;
+            // end
+          end
+          x_insn_key.insn_divu: begin
+            x_rd_data = unsigned_quotient;
+            // check if divide is not finished yet
+            // if (divide_count != 3'b111) begin
+            //   pcNext = pcCurrent;
+            // end
+          end
+          // Modulus
+          x_insn_key.insn_rem: begin
+            x_rd_data = signed_remainder;
+            // // check if divide is not finished yet
+            // if (divide_count != 3'b111) begin
+            //   pcNext = pcCurrent;            
+            // end
+          end
+          x_insn_key.insn_remu: begin
+            x_rd_data = unsigned_remainder;
+            // check if divide is not finished yet
+            // if (divide_count != 3'b111) begin
+            //   pcNext = pcCurrent;
 
-          //   // end
-          // end
+            // end
+          end
 
         endcase
       end
@@ -978,7 +1227,6 @@ module DatapathPipelined (
 
       OpStore: begin
         x_addr_to_dmem = cla_sum;
-        //x_store_mem_to_dmem = x_rs2_data;
       end
 
       OpJalr: begin
@@ -1028,6 +1276,40 @@ module DatapathPipelined (
     if (rst) begin
       memory_state <= 0;
       memory_state.cycle_status <= CYCLE_RESET;
+    end else if (x_div_insn && ~(div_count_first == 3'b0)) begin
+      // only let through divide insns if div_count_first == 0
+      memory_state <= 0;
+      memory_state.cycle_status <= CYCLE_DIV;
+    end else if (x_div_insn) begin
+      // SPECIAL CASE TO READ DIV INSNS TO MEMORY STAGE
+      memory_state <= '{
+          pc: div_pc_7,
+          insn: div_insn_7,
+          cycle_status: CYCLE_NO_STALL,
+          opcode: div_insn_7[6:0],
+
+          // register signals
+          insn_rd: div_insn_rd_7,
+          rd_data: x_rd_data,
+          we: 1,
+
+          // memory signals
+          addr_to_dmem: 0,
+          store_data_to_dmem: 0,
+          store_we_to_dmem: 0,
+
+          rs2_data: 0,
+          insn_rs2: 0,
+
+          // branch signals
+          branched_pc: 0, // represents the pc value that will be branched to IF there is a branch
+          branch_taken: 0, // 1: branch, 0: no branch
+
+          insn_set: 0,
+
+          halt: 0
+
+        };
     end else begin
         memory_state <= '{
           pc: x_pc,
