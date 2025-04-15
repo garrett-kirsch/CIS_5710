@@ -382,7 +382,9 @@ module DatapathPipelined (
 
   // INITIAL STALL if divide in execute && (no divide in decode || data dependent divide in decode)
   // if there is a STALL, the values will be stay the same in execute stage, so data dependency will remain
-  assign div_stall = x_div_insn && (~d_div_insn || (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2)) && div_count_latest != 0;
+  assign div_stall = x_div_insn && 
+                    (~d_div_insn || (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2)) && 
+                    div_count_latest != 0;
 
   // we should NOT stall when div_count_latest == 0, since that is when we are reading out our divider
 
@@ -411,7 +413,7 @@ module DatapathPipelined (
     end
   end
 
-  // Create 7 registers to hold important values through the divide datapath
+  // // Create 7 registers to hold important values through the divide datapath
   logic div_by_zero_1;
   logic div_sign_1;
   logic dividend_sign_1;
@@ -419,6 +421,43 @@ module DatapathPipelined (
   logic [`REG_SIZE] div_pc_1; // probably unnecessary
   logic [`REG_SIZE] div_insn_1; // probably unnecessary
   logic [4:0] div_insn_rd_1; // NECESSARY
+
+// logic [7:0] div_by_zero_pipeline;
+// logic [7:0] div_sign_pipeline;
+// logic [7:0] dividend_sign_pipeline;
+
+// logic [`REG_SIZE] div_pc_pipeline [7:0]; // probably unnecessary
+// logic [`REG_SIZE] div_insn_pipeline [7:0]; // probably unnecessary
+// logic [4:0] div_insn_rd_pipeline [7:0]; // NECESSARY
+
+// always_ff @(posedge clk) begin
+//   if (rst) begin
+//     for (int i = 0; i < 8; i++) begin
+//       div_by_zero_pipeline[i] <= 0;
+//       div_sign_pipeline[i] <= 0;
+//       dividend_sign_pipeline[i] <= 0;
+//       div_pc_pipeline[i] <= 0;
+//       div_insn_pipeline[i] <= 0;
+//       div_insn_rd_pipeline[i] <= 0;
+//     end
+//   end else begin
+//     div_by_zero_pipeline[0] <= x_rs2_data == 0;
+//     div_sign_pipeline[0] <= x_rs1_data[31] ^ x_rs2_data[31];
+//     dividend_sign_pipeline[0] <= x_rs1_data[31];
+//     div_pc_pipeline[0] <= x_pc;
+//     div_insn_pipeline[0] <= x_insn;
+//     div_insn_rd_pipeline[0] <= x_insn_rd;
+
+//     for (int i = 1; i < 8; i++) begin
+//       div_by_zero_pipeline[i] <= div_by_zero_pipeline[i-1];
+//       div_sign_pipeline[i] <= div_sign_pipeline[i-1];
+//       dividend_sign_pipeline[i] <= dividend_sign_pipeline[i-1];
+//       div_pc_pipeline[i] <= div_pc_pipeline[i-1];
+//       div_insn_pipeline[i] <= div_insn_pipeline[i-1];
+//       div_insn_rd_pipeline[i] <= div_insn_rd_pipeline[i-1];
+//     end
+//   end
+// end
 
 
   always_ff @(posedge clk) begin
@@ -589,9 +628,6 @@ module DatapathPipelined (
       div_insn_rd_7 <= div_insn_rd_6;
     end
   end
-
-  
-
 
   // cycle counter, not really part of any stage but useful for orienting within GtkWave
   // do not rename this as the testbench uses this value
@@ -1020,7 +1056,7 @@ module DatapathPipelined (
   always_comb begin
     data_dependent_load = 0;
     if (x_opcode == OpLoad) begin
-      if (d_insn_opcode == OpStore || d_insn_opcode == OpRegImm) begin
+      if (d_insn_opcode == OpStore || d_insn_opcode == OpRegImm || d_insn_opcode == OpLoad) begin
         // if store or imm insn, only stall if x_insn_rd == d_insn_rs1
         data_dependent_load = x_insn_rd == d_insn_rs1;
       end else if (d_insn_opcode != OpLui && d_insn_opcode != OpJal 
