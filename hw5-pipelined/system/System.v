@@ -455,20 +455,222 @@ module DatapathPipelined (
 	wire [31:0] unsigned_dividend;
 	wire [31:0] unsigned_quotient;
 	wire [31:0] unsigned_remainder;
-	reg [435:0] execute_state;
-	assign unsigned_dividend = (execute_state[121] ? ~execute_state[121-:32] + 1 : execute_state[121-:32]);
-	assign unsigned_divisor = (execute_state[89] ? ~execute_state[89-:32] + 1 : execute_state[89-:32]);
-	assign signed_quotient = (execute_state[121] ^ execute_state[89] ? ~unsigned_quotient + 1 : unsigned_quotient);
-	assign signed_remainder = (execute_state[121] ? ~unsigned_remainder + 1 : unsigned_remainder);
+	assign unsigned_dividend = (x_rs1_data[31] ? ~x_rs1_data + 1 : x_rs1_data);
+	assign unsigned_divisor = (x_rs2_data[31] ? ~x_rs2_data + 1 : x_rs2_data);
+	reg [31:0] dividend;
+	reg [31:0] divisor;
+	always @(*) begin
+		if (_sv2v_0)
+			;
+		dividend = x_rs1_data;
+		divisor = x_rs2_data;
+		if (x_insn_key[5] || x_insn_key[3]) begin
+			dividend = unsigned_dividend;
+			divisor = unsigned_divisor;
+		end
+	end
+	reg div_sign_7;
+	assign signed_quotient = (div_sign_7 ? ~unsigned_quotient + 1 : unsigned_quotient);
+	reg dividend_sign_7;
+	assign signed_remainder = (dividend_sign_7 ? ~unsigned_remainder + 1 : unsigned_remainder);
 	DividerUnsignedPipelined divider(
 		.clk(clk),
 		.rst(rst),
 		.stall(0),
-		.i_dividend(unsigned_dividend),
-		.i_divisor(unsigned_divisor),
+		.i_dividend(dividend),
+		.i_divisor(divisor),
 		.o_quotient(unsigned_quotient),
 		.o_remainder(unsigned_remainder)
 	);
+	reg [2:0] div_count_latest;
+	reg [2:0] div_count_first;
+	wire d_div_insn;
+	wire [46:0] d_insn_key;
+	assign d_div_insn = ((d_insn_key[5] || d_insn_key[4]) || d_insn_key[3]) || d_insn_key[2];
+	wire x_div_insn;
+	assign x_div_insn = ((x_insn_key[5] || x_insn_key[4]) || x_insn_key[3]) || x_insn_key[2];
+	wire div_stall;
+	wire [4:0] x_insn_rd;
+	assign div_stall = (x_div_insn && (~d_div_insn || ((x_insn_rd == d_insn_rs1) || (x_insn_rd == d_insn_rs2)))) && (div_count_latest != 0);
+	always @(posedge clk) begin
+		div_count_first <= 0;
+		div_count_latest <= 0;
+		if (rst) begin
+			div_count_first <= 0;
+			div_count_latest <= 0;
+		end
+		else begin
+			if ((div_count_latest > div_count_first) && (div_count_first == 0))
+				div_count_first <= 0;
+			else if (d_div_insn || x_div_insn)
+				div_count_first <= div_count_first + 1;
+			if (div_stall)
+				div_count_latest <= div_count_latest + 1;
+			else if (d_div_insn || x_div_insn)
+				div_count_latest <= 1;
+		end
+	end
+	reg div_by_zero_1;
+	reg div_sign_1;
+	reg dividend_sign_1;
+	reg [31:0] div_pc_1;
+	reg [31:0] div_insn_1;
+	reg [4:0] div_insn_rd_1;
+	wire [31:0] x_insn;
+	wire [31:0] x_pc;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_1 <= 0;
+			div_sign_1 <= 0;
+			dividend_sign_1 <= 0;
+			div_pc_1 <= 0;
+			div_insn_1 <= 0;
+			div_insn_rd_1 <= 0;
+		end
+		else begin
+			div_by_zero_1 <= x_rs2_data == 0;
+			div_sign_1 <= x_rs1_data[31] ^ x_rs2_data[31];
+			dividend_sign_1 <= x_rs1_data[31];
+			div_pc_1 <= x_pc;
+			div_insn_1 <= x_insn;
+			div_insn_rd_1 <= x_insn_rd;
+		end
+	reg div_by_zero_2;
+	reg div_sign_2;
+	reg dividend_sign_2;
+	reg [31:0] div_pc_2;
+	reg [31:0] div_insn_2;
+	reg [4:0] div_insn_rd_2;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_2 <= 0;
+			div_sign_2 <= 0;
+			dividend_sign_2 <= 0;
+			div_pc_2 <= 0;
+			div_insn_2 <= 0;
+			div_insn_rd_2 <= 0;
+		end
+		else begin
+			div_by_zero_2 <= div_by_zero_1;
+			div_sign_2 <= div_sign_1;
+			dividend_sign_2 <= dividend_sign_1;
+			div_pc_2 <= div_pc_1;
+			div_insn_2 <= div_insn_1;
+			div_insn_rd_2 <= div_insn_rd_1;
+		end
+	reg div_by_zero_3;
+	reg div_sign_3;
+	reg dividend_sign_3;
+	reg [31:0] div_pc_3;
+	reg [31:0] div_insn_3;
+	reg [4:0] div_insn_rd_3;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_3 <= 0;
+			div_sign_3 <= 0;
+			dividend_sign_3 <= 0;
+			div_pc_3 <= 0;
+			div_insn_3 <= 0;
+			div_insn_rd_3 <= 0;
+		end
+		else begin
+			div_by_zero_3 <= div_by_zero_2;
+			div_sign_3 <= div_sign_2;
+			dividend_sign_3 <= dividend_sign_2;
+			div_pc_3 <= div_pc_2;
+			div_insn_3 <= div_insn_2;
+			div_insn_rd_3 <= div_insn_rd_2;
+		end
+	reg div_by_zero_4;
+	reg div_sign_4;
+	reg dividend_sign_4;
+	reg [31:0] div_pc_4;
+	reg [31:0] div_insn_4;
+	reg [4:0] div_insn_rd_4;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_4 <= 0;
+			div_sign_4 <= 0;
+			dividend_sign_4 <= 0;
+			div_pc_4 <= 0;
+			div_insn_4 <= 0;
+			div_insn_rd_4 <= 0;
+		end
+		else begin
+			div_by_zero_4 <= div_by_zero_3;
+			div_sign_4 <= div_sign_3;
+			dividend_sign_4 <= dividend_sign_3;
+			div_pc_4 <= div_pc_3;
+			div_insn_4 <= div_insn_3;
+			div_insn_rd_4 <= div_insn_rd_3;
+		end
+	reg div_by_zero_5;
+	reg div_sign_5;
+	reg dividend_sign_5;
+	reg [31:0] div_pc_5;
+	reg [31:0] div_insn_5;
+	reg [4:0] div_insn_rd_5;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_5 <= 0;
+			div_sign_5 <= 0;
+			dividend_sign_5 <= 0;
+			div_pc_5 <= 0;
+			div_insn_5 <= 0;
+			div_insn_rd_5 <= 0;
+		end
+		else begin
+			div_by_zero_5 <= div_by_zero_4;
+			div_sign_5 <= div_sign_4;
+			dividend_sign_5 <= dividend_sign_4;
+			div_pc_5 <= div_pc_4;
+			div_insn_5 <= div_insn_4;
+			div_insn_rd_5 <= div_insn_rd_4;
+		end
+	reg div_by_zero_6;
+	reg div_sign_6;
+	reg dividend_sign_6;
+	reg [31:0] div_pc_6;
+	reg [31:0] div_insn_6;
+	reg [4:0] div_insn_rd_6;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_6 <= 0;
+			div_sign_6 <= 0;
+			dividend_sign_6 <= 0;
+			div_pc_6 <= 0;
+			div_insn_6 <= 0;
+			div_insn_rd_6 <= 0;
+		end
+		else begin
+			div_by_zero_6 <= div_by_zero_5;
+			div_sign_6 <= div_sign_5;
+			dividend_sign_6 <= dividend_sign_5;
+			div_pc_6 <= div_pc_5;
+			div_insn_6 <= div_insn_5;
+			div_insn_rd_6 <= div_insn_rd_5;
+		end
+	reg div_by_zero_7;
+	reg [31:0] div_pc_7;
+	reg [31:0] div_insn_7;
+	reg [4:0] div_insn_rd_7;
+	always @(posedge clk)
+		if (rst) begin
+			div_by_zero_7 <= 0;
+			div_sign_7 <= 0;
+			dividend_sign_7 <= 0;
+			div_pc_7 <= 0;
+			div_insn_7 <= 0;
+			div_insn_rd_7 <= 0;
+		end
+		else begin
+			div_by_zero_7 <= div_by_zero_6;
+			div_sign_7 <= div_sign_6;
+			dividend_sign_7 <= dividend_sign_6;
+			div_pc_7 <= div_pc_6;
+			div_insn_7 <= div_insn_6;
+			div_insn_rd_7 <= div_insn_rd_6;
+		end
 	reg [31:0] cycles_current;
 	always @(posedge clk)
 		if (rst)
@@ -490,7 +692,7 @@ module DatapathPipelined (
 			f_pc_current <= x_branched_pc;
 			f_cycle_status <= 32'd2;
 		end
-		else if (data_dependent_load) begin
+		else if (data_dependent_load || div_stall) begin
 			f_pc_current <= f_pc_current;
 			f_cycle_status <= 32'd2;
 		end
@@ -512,6 +714,7 @@ module DatapathPipelined (
 		.disasm(d_disasm)
 	);
 	wire [255:0] x_disasm;
+	reg [435:0] execute_state;
 	Disasm #(.PREFIX("X")) disasm_2execute(
 		.insn(execute_state[403-:32]),
 		.disasm(x_disasm)
@@ -536,7 +739,7 @@ module DatapathPipelined (
 			decode_state <= 96'h000000000000000000000001;
 		else if (x_branch_taken)
 			decode_state <= 96'h000000000000000000000004;
-		else if (data_dependent_load)
+		else if (data_dependent_load || div_stall)
 			decode_state <= {d_pc_current, d_insn, d_cycle_status};
 		else
 			decode_state <= {f_pc_current, f_insn, f_cycle_status};
@@ -549,12 +752,12 @@ module DatapathPipelined (
 	wire [4:0] d_insn_rd_temp;
 	wire [6:0] d_insn_opcode;
 	assign {d_insn_funct7, d_insn_rs2, d_insn_rs1, d_insn_funct3, d_insn_rd_temp, d_insn_opcode} = d_insn;
-	assign d_insn_rd = (d_insn_opcode == OpBranch ? 0 : d_insn_rd_temp);
+	assign d_insn_rd = ((d_insn_opcode == OpBranch) || (d_insn_opcode == OpStore) ? 0 : d_insn_rd_temp);
 	wire [11:0] d_imm_i;
 	assign d_imm_i = d_insn[31:20];
 	wire [11:0] d_imm_s;
 	assign d_imm_s[11:5] = d_insn_funct7;
-	assign d_imm_s[4:0] = d_insn_rd;
+	assign d_imm_s[4:0] = d_insn_rd_temp;
 	wire [12:0] d_imm_b;
 	assign {d_imm_b[12], d_imm_b[10:5]} = d_insn_funct7;
 	assign {d_imm_b[4:1], d_imm_b[11]} = d_insn_rd_temp;
@@ -583,10 +786,6 @@ module DatapathPipelined (
 		if ((w_insn_rd == d_insn_rs2) && (d_insn_rs2 != 0))
 			d_rs2_data = w_rd_data;
 	end
-	wire load_data_dependency_stall;
-	wire [4:0] x_insn_rd;
-	assign load_data_dependency_stall = (x_opcode == OpLoad) && ((x_insn_rd == d_insn_rs1) || (x_insn_rd == d_insn_rs2));
-	wire [46:0] d_insn_key;
 	assign d_insn_key[46] = d_insn_opcode == OpLui;
 	assign d_insn_key[45] = d_insn_opcode == OpAuipc;
 	assign d_insn_key[44] = d_insn_opcode == OpJal;
@@ -649,13 +848,15 @@ module DatapathPipelined (
 			execute_state <= 0;
 			execute_state[371-:32] <= 32'd16;
 		end
+		else if (div_stall) begin
+			execute_state <= execute_state;
+			execute_state[371-:32] <= 32'd8;
+		end
 		else
 			execute_state <= normal_execute_state;
 	reg x_we;
 	reg [31:0] x_rd_data;
-	wire [31:0] x_pc;
 	assign x_pc = execute_state[435-:32];
-	wire [31:0] x_insn;
 	assign x_insn = execute_state[403-:32];
 	wire [31:0] x_cycle_status;
 	assign x_cycle_status = execute_state[371-:32];
@@ -716,7 +917,7 @@ module DatapathPipelined (
 			;
 		data_dependent_load = 0;
 		if (x_opcode == OpLoad) begin
-			if ((d_insn_opcode == OpStore) || (d_insn_opcode == OpRegImm))
+			if (((d_insn_opcode == OpStore) || (d_insn_opcode == OpRegImm)) || (d_insn_opcode == OpLoad))
 				data_dependent_load = x_insn_rd == d_insn_rs1;
 			else if (((d_insn_opcode != OpLui) && (d_insn_opcode != OpJal)) && (d_insn_opcode != OpJalr))
 				data_dependent_load = (x_insn_rd == d_insn_rs1) || (x_insn_rd == d_insn_rs2);
@@ -787,6 +988,14 @@ module DatapathPipelined (
 						multiple = $unsigned(x_rs1_data) * $unsigned(x_rs2_data);
 						x_rd_data = multiple[63:32];
 					end
+					x_insn_key[5]:
+						if (div_by_zero_7)
+							x_rd_data = 32'hffffffff;
+						else
+							x_rd_data = signed_quotient;
+					x_insn_key[4]: x_rd_data = unsigned_quotient;
+					x_insn_key[3]: x_rd_data = signed_remainder;
+					x_insn_key[2]: x_rd_data = unsigned_remainder;
 				endcase
 			end
 			OpBranch: begin
@@ -804,10 +1013,7 @@ module DatapathPipelined (
 				x_we = 1;
 				x_addr_to_dmem = cla_sum;
 			end
-			OpStore: begin
-				x_addr_to_dmem = cla_sum;
-				x_store_mem_to_dmem = x_rs2_data;
-			end
+			OpStore: x_addr_to_dmem = cla_sum;
 			OpJalr: begin
 				x_we = 1;
 				x_rd_data = x_pc + 4;
@@ -832,6 +1038,12 @@ module DatapathPipelined (
 			memory_state <= 0;
 			memory_state[262-:32] <= 32'd1;
 		end
+		else if (x_div_insn && ~(div_count_first == 3'b000)) begin
+			memory_state <= 0;
+			memory_state[262-:32] <= 32'd8;
+		end
+		else if (x_div_insn)
+			memory_state <= {div_pc_7, div_insn_7, 32'd2, div_insn_7[6:0], div_insn_rd_7, x_rd_data, 187'h40000000000000000000000000000000000000000000000};
 		else
 			memory_state <= {x_pc, x_insn, x_cycle_status, x_opcode, x_insn_rd, x_rd_data, x_we, x_addr_to_dmem, x_store_mem_to_dmem, x_store_we_to_dmem, x_rs2_data, x_insn_rs2, x_branched_pc, x_branch_taken, x_insn_key, x_halt};
 	wire [31:0] m_pc;
@@ -870,8 +1082,10 @@ module DatapathPipelined (
 		if (_sv2v_0)
 			;
 		m_rs2_data = m_rs2_data_temp;
-		if (((w_insn_load && (w_insn_rd == m_insn_rs2)) && (m_opcode == OpStore)) && (w_insn_rd != 0))
-			m_rs2_data = w_rd_data;
+		if ((m_opcode == OpStore) && (m_insn_rs2 != 0)) begin
+			if (w_insn_load && (w_insn_rd == m_insn_rs2))
+				m_rs2_data = w_rd_data;
+		end
 	end
 	always @(*) begin
 		if (_sv2v_0)

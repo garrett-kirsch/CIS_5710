@@ -184,9 +184,13 @@ module AxilCache #(
 );
 
   // TODO: calculate these
-  localparam int BlockOffsetBits = 0;
-  localparam int IndexBits = 0;
-  localparam int TagBits = 0;
+  localparam int ADDR_WIDTH = 32; // Assuming a 32-bit address space
+  localparam int BlockOffsetBits = 2;
+  localparam int IndexBits = $clog2(NUM_SETS);
+  localparam int TagBits = ADDR_WIDTH - BlockOffsetBits - IndexBits;
+
+  localparam bit True = 1'b1;
+  localparam bit False = 1'b0;
 
   // cache state
   cache_state_t current_state;
@@ -221,12 +225,240 @@ module AxilCache #(
   assign proc.BRESP = `RESP_OK;
 
   // TODO: the rest of your changes will go below
+  // processor outputs: ARREADY, RVALID, RDATA, AWREADY, WREADY, BVALID
+  // mem outputs: ARVALID, ARADDR, ARPROT, RREADY, AWVALID, AWADDR, AWPROT, WVALID, WDATA, WSTRB, BREADY
 
-  always_ff @(posedge ACLK) begin
+  logic proc_AR_ready;
+  logic proc_R_valid;
+  logic [31:0] proc_R_data;
+  logic proc_AW_ready;
+  logic proc_W_ready;
+  logic proc_B_valid;
+
+  logic mem_AR_valid;
+  logic [31:0] mem_AR_addr;
+  logic mem_R_ready;
+  logic mem_AW_valid;
+  logic [31:0] mem_AW_addr;
+  logic mem_W_valid;
+  logic [31:0] mem_W_data;
+  logic [3:0] mem_W_strb;
+  logic mem_B_ready;
+
+  logic write_hit;
+  logic [IndexBits-1:0] write_index;
+  logic [31:0] write_data;
+  logic [3:0] write_strb;
+
+  logic [IndexBits-1:0] index;
+  logic [TagBits-1:0] tag_in;
+
+  // get index and tag_index from the address 
+  assign index = proc.ARVALID ? proc.ARADDR[BlockOffsetBits +: IndexBits] :
+                                proc.AWADDR[BlockOffsetBits +: IndexBits];
+  assign tag_in = proc.ARVALID ? proc.ARADDR[BlockOffsetBits + IndexBits +: TagBits] :
+                                 proc.AWADDR[BlockOffsetBits + IndexBits +: TagBits];
+
+
+  // Default values for outputs
+  always_comb begin
+    proc_AR_ready = False;
+    proc_R_valid = False;
+    proc_R_data = 0;
+    proc_AW_ready = False;
+    proc_W_ready = False;
+    proc_B_valid = False;
+
+    mem_AR_valid = False;
+    mem_AR_addr = 0;
+    mem_R_ready = False;
+    mem_AW_valid = False;
+    mem_AW_addr = 0;
+    mem_W_valid = False;
+    mem_W_data = 0;
+    mem_W_strb = 0;
+    mem_B_ready = False;
+
+    next_state = CACHE_AVAILABLE;
+
     if (!ARESETn) begin // NB: reset when ARESETn == 0
-      current_state <= CACHE_AVAILABLE;
+
+      // Assign processor outputs
+      proc_AR_ready = True;
+      proc_AW_ready = True;
+      proc_W_ready = True;
+      
+      // Assign memory outputs
+      mem_R_ready = True;
+      mem_B_ready = True;
+      
+      
+    end else begin
+      case (current_state)
+        CACHE_AVAILABLE: begin
+          // Extract address components
+          proc_AR_ready = True;
+          proc_AW_ready = True;
+          proc_W_ready = True;
+
+          if (proc.ARVALID) begin         
+
+            if (valid[index] && tag[index] == tag_in) begin
+              // Read Hit
+              proc_R_valid = True;
+              proc_R_data = data[index];
+              if (proc.RREADY) begin
+                next_state = CACHE_AVAILABLE;
+              end else begin
+                next_state = CACHE_AWAIT_MANAGER_READY;
+              end
+            end else begin
+              // Read Miss: fetch from memory
+              mem_AR_valid = True;
+              mem_AR_addr = proc.ARADDR;
+              if (mem.ARREADY) begin
+                next_state = CACHE_AWAIT_FILL_RESPONSE;
+              end else begin
+                next_state = CACHE_AVAILABLE;
+              end
+            end
+
+          end else if (proc.AWVALID && proc.WVALID) begin
+
+
+            if (valid[index] && tag[index] == tag_in) begin
+              // Write Hit
+              // Apply WSTRB (byte enables)
+              write_hit = True;
+              write_index = index;
+              write_data = proc.WDATA;
+              write_strb = proc.WSTRB;
+
+              dirty[index] = True;
+
+              // Send write response to processor
+              proc_B_valid = True;
+              if (proc.BREADY) begin
+                next_state = CACHE_AVAILABLE;
+              end else begin
+                next_state = CACHE_AWAIT_MANAGER_READY;
+              end
+            end else begin
+              // Write Miss: write directly to memory
+              mem_AW_valid = True;
+              mem_AW_addr = proc.AWADDR;
+              mem_W_valid = True;
+              mem_W_data = proc.WDATA;
+              mem_W_strb = proc.WSTRB;
+
+              if (mem.AWREADY && mem.WREADY) begin
+                next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
+              end else begin
+                next_state = CACHE_AVAILABLE;
+              end
+            end
+
+          end else begin
+            next_state = CACHE_AVAILABLE;
+          end
+        end
+
+
+        CACHE_AWAIT_FILL_RESPONSE: begin
+          
+          mem_R_ready = True; // Tell memory we are ready for data
+          if (mem.RVALID) begin
+            proc_R_valid = True;        // Tell processor we have data
+            proc_R_data = mem.RDATA;    // Forward data from memory to processor
+            if (proc.RREADY) begin
+              next_state = CACHE_AVAILABLE;  // Done with this transaction
+            end else begin
+              next_state = CACHE_AWAIT_MANAGER_READY; // Wait until processor takes data
+            end
+          end else begin
+            next_state = CACHE_AWAIT_FILL_RESPONSE; // Stay here until mem responds
+          end
+        end
+
+
+        CACHE_AWAIT_WRITEBACK_RESPONSE: begin
+          mem_B_ready = True; // Tell memory we're ready for write response
+          if (mem.BVALID) begin
+            proc_B_valid = True; // Inform processor of write completion
+            if (proc.BREADY) begin
+              next_state = CACHE_AVAILABLE; // Done
+            end else begin
+              next_state = CACHE_AWAIT_MANAGER_READY; // Wait until processor accepts response
+            end
+          end else begin
+            next_state = CACHE_AWAIT_WRITEBACK_RESPONSE; // Still waiting
+          end
+        end
+
+        // end
+
+        CACHE_AWAIT_MANAGER_READY: begin
+          if ((proc.RVALID && proc.RREADY) || (proc.BVALID && proc.BREADY)) begin
+            next_state = CACHE_AVAILABLE;
+          end else begin
+            next_state = CACHE_AWAIT_MANAGER_READY;
+          end
+        end
+
+
+        default: begin
+          next_state = CACHE_AVAILABLE;
+        end
+      endcase
     end
   end
+
+
+
+  // Determine cache state
+  cache_state_t next_state;
+
+  // always_comb begin
+  //   if (!ARESETn) begin // NB: reset when ARESETn == 0
+  //     next_state = CACHE_AVAILABLE;
+  //   end
+  // end
+
+
+  always_ff @(posedge ACLK) begin
+    
+    current_state <= next_state; // set next state
+
+    // Assign processor outputs
+    proc.ARREADY <= proc_AR_ready;
+    proc.RVALID <= proc_R_valid;
+    proc.RDATA <= proc_R_data;
+    proc.AWREADY <= proc_AW_ready;
+    proc.WREADY <= proc_W_ready;
+    proc.BVALID <= proc_B_valid;
+
+    // Assign memory outputs
+    mem.ARVALID <= mem_AR_valid;
+    mem.ARADDR <= mem_AR_addr;
+    mem.RREADY <= mem_R_ready;
+    mem.AWVALID <= mem_AW_valid;
+    mem.AWADDR <= mem_AW_addr;
+    mem.WVALID <= mem_W_valid;
+    mem.WDATA <= mem_W_data;
+    mem.WSTRB <= mem_W_strb;
+    mem.BREADY <= mem_B_ready;
+
+    if (write_hit) begin
+      if (write_strb[0]) data[write_index][7:0]   <= write_data[7:0];
+      if (write_strb[1]) data[write_index][15:8]  <= write_data[15:8];
+      if (write_strb[2]) data[write_index][23:16] <= write_data[23:16];
+      if (write_strb[3]) data[write_index][31:24] <= write_data[31:24];
+      dirty[write_index] <= True;
+    end
+    
+
+  end
+
 
 endmodule // AxilCache
 
