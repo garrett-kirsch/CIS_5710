@@ -253,6 +253,12 @@ module AxilCache #(
   logic [IndexBits-1:0] index;
   logic [TagBits-1:0] tag_in;
 
+  // data buffer
+  logic buffered_read;
+  logic buffered_read_register;
+  logic [31:0] data_buffer;
+  logic [31:0] data_buffer_register;
+
   // get index and tag_index from the address 
   assign index = proc.ARVALID ? proc.ARADDR[BlockOffsetBits +: IndexBits] :
                                 proc.AWADDR[BlockOffsetBits +: IndexBits];
@@ -278,6 +284,10 @@ module AxilCache #(
     mem_W_data = 0;
     mem_W_strb = 0;
     mem_B_ready = False;
+    write_hit = False;
+
+    data_buffer = 0;
+    buffered_read = 0;
 
     next_state = CACHE_AVAILABLE;
 
@@ -308,8 +318,20 @@ module AxilCache #(
               proc_R_valid = True;
               proc_R_data = data[index];
               if (proc.RREADY) begin
+                // ready to read
                 next_state = CACHE_AVAILABLE;
               end else begin
+                // not ready
+                // POSSIBLE ISSUE: MAY NEED TO SET ARREADY TO 0
+                // check if previous state was a read
+                if (proc.RVALID) begin
+                  // keep old data
+                  proc_R_data = proc.RDATA;
+                  // we need some way to store the data we have right now
+                  data_buffer = data[index];
+                  buffered_read = 1;
+                end
+                proc_AR_ready = False;
                 next_state = CACHE_AWAIT_MANAGER_READY;
               end
             end else begin
@@ -398,8 +420,32 @@ module AxilCache #(
         // end
 
         CACHE_AWAIT_MANAGER_READY: begin
-          if ((proc.RVALID && proc.RREADY) || (proc.BVALID && proc.BREADY)) begin
-            next_state = CACHE_AVAILABLE;
+
+          // preserve state until ready
+          proc_R_valid = proc.RVALID;
+          proc_R_data = proc.RDATA;
+
+          // buffered data handling
+          buffered_read = buffered_read_register;
+          data_buffer = data_buffer_register;
+
+
+          proc_B_valid = proc.BVALID;
+          
+
+          if (proc.RVALID && proc.RREADY) begin
+            // read data and make cache available
+            proc_R_valid = False;
+            if (buffered_read_register) begin
+              proc_R_valid = True;
+              proc_R_data = data_buffer_register;
+              data_buffer = 0;
+              buffered_read = 0;
+            end
+            
+          end else if (proc.BVALID && proc.BREADY) begin
+            // write data and make cache available
+            proc_B_valid = False;
           end else begin
             next_state = CACHE_AWAIT_MANAGER_READY;
           end
@@ -412,7 +458,6 @@ module AxilCache #(
       endcase
     end
   end
-
 
 
   // Determine cache state
@@ -456,7 +501,8 @@ module AxilCache #(
       dirty[write_index] <= True;
     end
     
-
+    data_buffer_register <= data_buffer;
+    buffered_read_register <= buffered_read;
   end
 
 
