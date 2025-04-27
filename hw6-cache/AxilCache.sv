@@ -171,6 +171,8 @@ typedef enum {
   CACHE_AWAIT_MANAGER_READY = 3
 } cache_state_t;
 
+
+
 module AxilCache #(
     /** size of each cache block, in bits */
     parameter int BLOCK_SIZE_BITS = 32,
@@ -259,6 +261,9 @@ module AxilCache #(
   logic [31:0] data_buffer;
   logic [31:0] data_buffer_register;
 
+  logic buffered_read_miss;
+  logic buffered_read_miss_register;
+
   // get index and tag_index from the address 
   assign index = proc.ARVALID ? proc.ARADDR[BlockOffsetBits +: IndexBits] :
                                 proc.AWADDR[BlockOffsetBits +: IndexBits];
@@ -311,6 +316,13 @@ module AxilCache #(
           proc_AW_ready = True;
           proc_W_ready = True;
 
+          mem_R_ready = True;
+          mem_B_ready = True;
+          
+          mem_AR_addr = proc.ARADDR;
+          mem_AW_addr = proc.AWADDR;         
+          
+
           if (proc.ARVALID) begin         
 
             if (valid[index] && tag[index] == tag_in) begin
@@ -340,6 +352,7 @@ module AxilCache #(
               mem_AR_addr = proc.ARADDR;
               if (mem.ARREADY) begin
                 next_state = CACHE_AWAIT_FILL_RESPONSE;
+                mem_R_ready = True;
               end else begin
                 next_state = CACHE_AVAILABLE;
               end
@@ -375,6 +388,7 @@ module AxilCache #(
 
               if (mem.AWREADY && mem.WREADY) begin
                 next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
+                
               end else begin
                 next_state = CACHE_AVAILABLE;
               end
@@ -389,12 +403,16 @@ module AxilCache #(
         CACHE_AWAIT_FILL_RESPONSE: begin
           
           mem_R_ready = True; // Tell memory we are ready for data
+          proc_R_data = mem.RDATA;
           if (mem.RVALID) begin
-            proc_R_valid = True;        // Tell processor we have data
-            proc_R_data = mem.RDATA;    // Forward data from memory to processor
+            proc_R_valid = True;
+            
             if (proc.RREADY) begin
-              next_state = CACHE_AVAILABLE;  // Done with this transaction
+              
+              next_state = CACHE_AVAILABLE; 
             end else begin
+              data_buffer = mem.RDATA;
+              buffered_read_miss = 1;
               next_state = CACHE_AWAIT_MANAGER_READY; // Wait until processor takes data
             end
           end else begin
@@ -463,12 +481,9 @@ module AxilCache #(
   // Determine cache state
   cache_state_t next_state;
 
-  // always_comb begin
-  //   if (!ARESETn) begin // NB: reset when ARESETn == 0
-  //     next_state = CACHE_AVAILABLE;
-  //   end
-  // end
-
+  assign mem.ARVALID = mem_AR_valid;
+  assign mem.ARADDR = mem_AR_addr;
+  // assign proc.RDATA = proc_R_data;
 
   always_ff @(posedge ACLK) begin
     
@@ -483,8 +498,8 @@ module AxilCache #(
     proc.BVALID <= proc_B_valid;
 
     // Assign memory outputs
-    mem.ARVALID <= mem_AR_valid;
-    mem.ARADDR <= mem_AR_addr;
+    // mem.ARVALID <= mem_AR_valid;
+    // mem.ARADDR <= mem_AR_addr;
     mem.RREADY <= mem_R_ready;
     mem.AWVALID <= mem_AW_valid;
     mem.AWADDR <= mem_AW_addr;
@@ -503,10 +518,11 @@ module AxilCache #(
     
     data_buffer_register <= data_buffer;
     buffered_read_register <= buffered_read;
+    buffered_read_miss_register <= buffered_read_miss;
   end
 
 
-endmodule // AxilCache
+// endmodule // AxilCache
 
 `ifndef SYNTHESIS
 /** This is used for testing AxilCache in simulation. Since Verilator doesn't allow
