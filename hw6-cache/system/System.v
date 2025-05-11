@@ -796,6 +796,10 @@ module SystemResourceCheck (
 	endgenerate
 	assign dcache.ACLK = clk;
 	assign dcache.ARESETn = ~rst;
+	function automatic [1:0] sv2v_cast_2;
+		input reg [1:0] inp;
+		sv2v_cast_2 = inp;
+	endfunction
 	generate
 		if (1) begin : datapath
 			reg _sv2v_0;
@@ -1155,30 +1159,50 @@ module SystemResourceCheck (
 				.insn(write_state[158-:32]),
 				.disasm(w_disasm)
 			);
-			reg [95:0] decode_state_temp;
+			reg [99:0] decode_state_temp;
 			wire d_branch_mispredict;
 			wire [31:0] d_cycle_status;
+			reg d_data_dep_load_in_x;
 			wire [31:0] d_pc_current;
-			reg [95:0] decode_state;
+			reg [99:0] decode_state;
 			wire [31:0] icache_rdata;
 			always @(*) begin
 				if (_sv2v_0)
 					;
-				if (rst)
-					decode_state_temp = 96'h000000000000000000000001;
-				else if (d_branch_mispredict)
-					decode_state_temp = 96'h000000000000000000000004;
-				else if (data_dependent_load || div_stall) begin
-					decode_state_temp = {d_pc_current, icache_rdata, d_cycle_status};
-					if ((x_insn == 0) || (div_count_latest > 1))
-						decode_state_temp[63-:32] = decode_state[63-:32];
+				if (rst) begin
+					decode_state_temp = 0;
+					decode_state_temp[35-:32] = 32'd1;
 				end
-				else
-					decode_state_temp = {f_pc_current, 32'd0, f_cycle_status};
+				else if (d_branch_mispredict) begin
+					decode_state_temp = 0;
+					decode_state_temp[35-:32] = 32'd4;
+					decode_state_temp[3] = 1;
+					decode_state_temp[1-:2] = 1;
+				end
+				else if (data_dependent_load || ((decode_state[1-:2] > 0) && decode_state[2])) begin
+					decode_state_temp = {d_pc_current, icache_rdata, d_cycle_status, 2'h1, sv2v_cast_2(0 + d_data_dep_load_in_x)};
+					if (decode_state[1-:2] > 0) begin
+						decode_state_temp[67-:32] = decode_state[67-:32];
+						decode_state_temp[1-:2] = decode_state[1-:2] - 1;
+					end
+				end
+				else if (div_stall) begin
+					decode_state_temp = {d_pc_current, icache_rdata, d_cycle_status, 4'h0};
+					if (div_count_latest > 1)
+						decode_state_temp[67-:32] = decode_state[67-:32];
+				end
+				else begin
+					decode_state_temp = {f_pc_current, 32'd0, f_cycle_status, decode_state[3], decode_state[2], sv2v_cast_2(decode_state[1-:2] - 1)};
+					if (decode_state[1-:2] == 0) begin
+						decode_state_temp[1-:2] = 0;
+						decode_state_temp[2] = 0;
+						decode_state_temp[3] = 0;
+					end
+				end
 			end
 			always @(posedge clk) decode_state <= decode_state_temp;
-			assign d_pc_current = decode_state[95-:32];
-			assign d_cycle_status = decode_state[31-:32];
+			assign d_pc_current = decode_state[99-:32];
+			assign d_cycle_status = decode_state[35-:32];
 			assign d_branch_mispredict = x_branch_taken;
 			reg [4:0] d_rs1;
 			reg [4:0] d_rs2;
@@ -1189,23 +1213,31 @@ module SystemResourceCheck (
 				d_rs1 = icache_rdata[19:15];
 				d_rs2 = icache_rdata[24:20];
 				d_opcode = icache_rdata[6:0];
-				if (decode_state[63-:32] != 0) begin
-					d_rs1 = decode_state[51:47];
-					d_rs2 = decode_state[56:52];
-					d_opcode = decode_state[38:32];
+				if (decode_state[67-:32] != 0) begin
+					d_rs1 = decode_state[55:51];
+					d_rs2 = decode_state[60:56];
+					d_opcode = decode_state[42:36];
 				end
 			end
+			wire d_branch_stall;
+			wire d_load_stall;
+			wire [1:0] d_stall_count;
 			wire [4:0] m_insn_rd;
 			wire [6:0] m_opcode;
 			always @(*) begin
 				if (_sv2v_0)
 					;
 				data_dependent_load = 0;
+				d_data_dep_load_in_x = 0;
 				if (x_opcode == OpLoad) begin
-					if (((d_opcode == OpStore) || (d_opcode == OpRegImm)) || (d_opcode == OpLoad))
+					if (((d_opcode == OpStore) || (d_opcode == OpRegImm)) || (d_opcode == OpLoad)) begin
 						data_dependent_load = x_insn_rd == d_rs1;
-					else if ((d_opcode != OpLui) && (d_opcode != OpJal))
+						d_data_dep_load_in_x = 1;
+					end
+					else if ((d_opcode != OpLui) && (d_opcode != OpJal)) begin
 						data_dependent_load = (x_insn_rd == d_rs1) || (x_insn_rd == d_rs2);
+						d_data_dep_load_in_x = 1;
+					end
 				end
 				else if (m_opcode == OpLoad) begin
 					if (((d_opcode == OpStore) || (d_opcode == OpRegImm)) || (d_opcode == OpLoad))
@@ -1215,20 +1247,18 @@ module SystemResourceCheck (
 				end
 			end
 			assign icache_rdata = SystemResourceCheck.axi_mem_ro.RDATA;
-			wire [31:0] m_insn;
-			wire [6:0] w_opcode;
 			always @(*) begin
 				if (_sv2v_0)
 					;
 				d_insn = icache_rdata;
 				if (d_branch_mispredict || data_dependent_load)
 					d_insn = 0;
-				else if ((x_insn == 0) && (m_opcode == OpBranch))
+				else if (decode_state[1-:2] > 0)
 					d_insn = 0;
-				else if (((x_insn == 0) && (m_insn == 0)) && (w_opcode == OpLoad))
-					d_insn = decode_state[63-:32];
+				else if ((decode_state[1-:2] == 0) && decode_state[2])
+					d_insn = decode_state[67-:32];
 				else if (x_div_insn && (div_count_latest == 0))
-					d_insn = decode_state[63-:32];
+					d_insn = decode_state[67-:32];
 			end
 			wire [6:0] d_insn_funct7;
 			wire [2:0] d_insn_funct3;
@@ -1477,8 +1507,8 @@ module SystemResourceCheck (
 							x_insn_key[41]: x_branch_taken = x_rs1_data != x_rs2_data;
 							x_insn_key[40]: x_branch_taken = $signed(x_rs1_data) < $signed(x_rs2_data);
 							x_insn_key[39]: x_branch_taken = $signed(x_rs1_data) >= $signed(x_rs2_data);
-							x_insn_key[38]: x_branch_taken = $signed(x_rs1_data) < $unsigned(x_rs2_data);
-							x_insn_key[37]: x_branch_taken = $signed(x_rs1_data) >= $unsigned(x_rs2_data);
+							x_insn_key[38]: x_branch_taken = $unsigned(x_rs1_data) < $unsigned(x_rs2_data);
+							x_insn_key[37]: x_branch_taken = $unsigned(x_rs1_data) >= $unsigned(x_rs2_data);
 						endcase
 					end
 					OpLoad: begin
@@ -1520,6 +1550,7 @@ module SystemResourceCheck (
 					memory_state <= {x_pc, x_insn, x_cycle_status, x_opcode, x_insn_rd, x_rd_data, x_we, x_addr_to_dmem, x_store_mem_to_dmem, x_store_we_to_dmem, x_rs2_data, x_insn_rs2, x_branched_pc, x_branch_taken, x_insn_key, x_halt};
 			wire [31:0] m_pc;
 			assign m_pc = memory_state[326-:32];
+			wire [31:0] m_insn;
 			assign m_insn = memory_state[294-:32];
 			wire [31:0] m_cycle_status;
 			assign m_cycle_status = memory_state[262-:32];
@@ -1624,6 +1655,7 @@ module SystemResourceCheck (
 			assign w_cycle_status = write_state[126-:32];
 			wire [46:0] w_insn_key;
 			assign w_insn_key = write_state[49-:47];
+			wire [6:0] w_opcode;
 			assign w_insn_load = w_opcode == OpLoad;
 			assign w_opcode = write_state[94-:7];
 			assign w_insn_rd = write_state[87-:5];

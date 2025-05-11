@@ -159,6 +159,9 @@ typedef struct packed {
   logic [`REG_SIZE] pc;
   logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;  
+  logic branch_stall;
+  logic load_stall;
+  logic[1:0] stall_count;
 } stage_decode_t;
 
 /** state at the start of Execute stage **/
@@ -642,6 +645,19 @@ module DatapathPipelinedCache (
       f_pc_current <= f_pc_current + 4;
     end
   end
+
+  // always_ff @(posedge clk) begin
+  //   if (rst) begin
+  //     f_pc_current  <= 32'd0;
+  //      f_cycle_status <= CYCLE_NO_STALL;
+  //   end else if (x_branch_taken) begin
+  //     f_pc_current  <= x_branched_pc;
+  //     f_cycle_status <= CYCLE_NO_STALL;
+  //   end else if (!(data_dependent_load || div_stall)) begin
+  //     f_pc_current  <= f_pc_current + 4;
+  //     f_cycle_status <= CYCLE_NO_STALL;
+  //   end
+  // end
   // send PC to imem
  
   // We need to do a read request to the icache through the AR lines
@@ -704,26 +720,42 @@ module DatapathPipelinedCache (
 
   always_comb begin
     if (rst) begin
-      decode_state_temp = '{
-        pc: 0,
-        insn: 0,
-        cycle_status: CYCLE_RESET
-      };
+      decode_state_temp = 0;
+      decode_state_temp.cycle_status = CYCLE_RESET;
     end else if (d_branch_mispredict) begin
       // FLUSH
-      decode_state_temp = '{
-        pc: 0,
-        insn: 0,
-        cycle_status: CYCLE_TAKEN_BRANCH
-      };
-    end else if (data_dependent_load || div_stall) begin
+      decode_state_temp = 0;
+      decode_state_temp.cycle_status = CYCLE_TAKEN_BRANCH;
+      decode_state_temp.branch_stall = 1;
+      decode_state_temp.stall_count = 1;
+    end else if (data_dependent_load || (decode_state.stall_count > 0 && decode_state.load_stall)) begin
       // STALL
       decode_state_temp = '{
         pc: d_pc_current,
         insn: icache_rdata,
-        cycle_status: d_cycle_status
+        cycle_status: d_cycle_status,
+        branch_stall: 0,
+        load_stall: 1,
+        stall_count: 0 + d_data_dep_load_in_x
       };
-      if (x_insn == 0 || div_count_latest > 1) begin
+      
+      if (decode_state.stall_count > 0) begin
+        // stalled insn = 0
+        decode_state_temp.insn = decode_state.insn;
+        decode_state_temp.stall_count = decode_state.stall_count - 1;
+      end 
+    end else if (div_stall) begin
+      // STALL
+      decode_state_temp = '{
+        pc: d_pc_current,
+        insn: icache_rdata,
+        cycle_status: d_cycle_status,
+        branch_stall: 0,
+        load_stall: 0,
+        stall_count: 0
+      };
+      
+      if (div_count_latest > 1) begin
         // stalled insn = 0
         decode_state_temp.insn = decode_state.insn;
       end 
@@ -732,8 +764,16 @@ module DatapathPipelinedCache (
       decode_state_temp = '{
         pc: f_pc_current,
         insn: 0,
-        cycle_status: f_cycle_status
+        cycle_status: f_cycle_status,
+        branch_stall: decode_state.branch_stall,
+        load_stall: decode_state.load_stall,
+        stall_count: decode_state.stall_count - 1
       };
+      if (decode_state.stall_count == 0) begin
+        decode_state_temp.stall_count = 0;
+        decode_state_temp.load_stall = 0;
+        decode_state_temp.branch_stall = 0;
+      end
     end
   end
   
@@ -770,16 +810,24 @@ module DatapathPipelinedCache (
     end
   end
 
+  logic d_branch_stall;
+  logic d_load_stall;
+  logic[1:0] d_stall_count;
+  logic d_data_dep_load_in_x;
+
   // determine data-dependent load -> if insn in execute is load && rd is a operator for the previous insn
   logic data_dependent_load; // = x_opcode == OpLoad && (x_insn_rd == d_insn_rs1 || x_insn_rd == d_insn_rs2);
   always_comb begin
     data_dependent_load = 0;
+    d_data_dep_load_in_x = 0;
     if (x_opcode == OpLoad) begin
       if (d_opcode == OpStore || d_opcode == OpRegImm || d_opcode == OpLoad) begin
         // if store or imm insn, only stall if x_insn_rd == d_insn_rs1
         data_dependent_load = x_insn_rd == d_rs1;
+        d_data_dep_load_in_x = 1;
       end else if (d_opcode != OpLui && d_opcode != OpJal) begin
         data_dependent_load = x_insn_rd == d_rs1 || x_insn_rd == d_rs2;
+        d_data_dep_load_in_x = 1;
       end
     end else if (m_opcode == OpLoad) begin
       if (d_opcode == OpStore || d_opcode == OpRegImm || d_opcode == OpLoad) begin
@@ -799,11 +847,13 @@ module DatapathPipelinedCache (
   always_comb begin
     d_insn = icache_rdata;
     if (d_branch_mispredict || data_dependent_load) begin
+      // stall on the active hazard
       d_insn = 0;
-    end else if (x_insn == 0 && m_opcode == OpBranch) begin
-      // delay one more cycle
+    end else if (decode_state.stall_count > 0) begin
+      // delay
       d_insn = 0;
-    end else if (x_insn == 0 && m_insn == 0 && w_opcode == OpLoad) begin
+    end else if (decode_state.stall_count == 0 && (decode_state.load_stall) ) begin
+      // end stalling
       d_insn = decode_state.insn;
     end else if (x_div_insn && div_count_latest == 0) begin
       // at the end of a divide stall, set d_insn equal to the value we've been perserving
@@ -1279,10 +1329,12 @@ module DatapathPipelinedCache (
             x_branch_taken = $signed(x_rs1_data) >= $signed(x_rs2_data);
           end
           x_insn_key.insn_bltu: begin
-            x_branch_taken = $signed(x_rs1_data) < $unsigned(x_rs2_data);
+            //x_branch_taken = $signed(x_rs1_data) < $unsigned(x_rs2_data);
+            x_branch_taken = $unsigned(x_rs1_data) <  $unsigned(x_rs2_data);
           end
           x_insn_key.insn_bgeu: begin
-            x_branch_taken = $signed(x_rs1_data) >= $unsigned(x_rs2_data);
+            // x_branch_taken = $signed(x_rs1_data) >= $unsigned(x_rs2_data);
+            x_branch_taken = $unsigned(x_rs1_data) >= $unsigned(x_rs2_data);
           end
          
         endcase
